@@ -26,6 +26,9 @@ import { query } from './src/lib/db';
 import { JwtPayload } from './src/lib/withAuth';
 import { EventEmitter } from 'events';
 import { telegramEventHandler } from './src/lib/telegram/TelegramEventHandler';
+// 🆕 Redis adapter imports
+import { createClient } from 'redis';
+import { createAdapter } from '@socket.io/redis-adapter';
 
 // Load environment variables for custom server (development only)
 // if (process.env.NODE_ENV !== 'production' && !process.env.JWT_SECRET) {
@@ -42,6 +45,7 @@ console.log('[Server] Environment check:', {
   NODE_ENV: process.env.NODE_ENV,
   hasJWT_SECRET: !!process.env.JWT_SECRET,
   hasDATABASE_URL: !!process.env.DATABASE_URL,
+  hasREDIS_URL: !!process.env.REDIS_URL,
   PORT: process.env.PORT || '3000'
 });
 
@@ -364,6 +368,37 @@ async function bootstrap() {
       credentials: true
     }
   });
+
+  // 🆕 Attach Redis adapter for multi-instance support
+  const redisUrl = process.env.REDIS_URL;
+  if (redisUrl) {
+    try {
+      console.log('[Socket.IO] Setting up Redis adapter...');
+      const pubClient = createClient({ url: redisUrl });
+      const subClient = pubClient.duplicate();
+      
+      // Handle Redis connection errors
+      pubClient.on('error', (err: Error) => {
+        console.error('[Socket.IO Redis] Pub client error:', err);
+      });
+      subClient.on('error', (err: Error) => {
+        console.error('[Socket.IO Redis] Sub client error:', err);
+      });
+      
+      // Connect both clients
+      await Promise.all([pubClient.connect(), subClient.connect()]);
+      
+      // Attach the Redis adapter
+      io.adapter(createAdapter(pubClient, subClient));
+      
+      console.log('[Socket.IO] Redis adapter initialized successfully - multi-instance coordination enabled');
+    } catch (error) {
+      console.error('[Socket.IO] Failed to initialize Redis adapter:', error);
+      console.warn('[Socket.IO] Continuing without Redis adapter - single instance mode');
+    }
+  } else {
+    console.warn('[Socket.IO] REDIS_URL not provided - running without Redis adapter (single instance mode)');
+  }
 
   console.log('[Socket.IO] Server instance created with global presence system');
 

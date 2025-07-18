@@ -110,6 +110,56 @@ CREATE INDEX ai_usage_logs_user_id_created_at_index ON public.ai_usage_logs USIN
 CREATE INDEX ai_usage_logs_community_id_created_at_index ON public.ai_usage_logs USING btree (community_id, created_at);
 
 
+DROP TABLE IF EXISTS "authentication_sessions";
+CREATE TABLE "public"."authentication_sessions" (
+    "id" uuid DEFAULT gen_random_uuid() NOT NULL,
+    "user_id" text NOT NULL,
+    "session_token" text NOT NULL,
+    "identity_type" character varying(20) NOT NULL,
+    "wallet_address" text,
+    "signed_message" text NOT NULL,
+    "signature" text NOT NULL,
+    "created_at" timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "expires_at" timestamptz NOT NULL,
+    "last_accessed_at" timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "is_active" boolean DEFAULT true NOT NULL,
+    CONSTRAINT "authentication_sessions_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "check_session_identity_type" CHECK ((identity_type)::text = ANY ((ARRAY['ens'::character varying, 'universal_profile'::character varying, 'anonymous'::character varying])::text[]))
+) WITH (oids = false);
+
+COMMENT ON COLUMN "public"."authentication_sessions"."user_id" IS 'User this session belongs to';
+
+COMMENT ON COLUMN "public"."authentication_sessions"."session_token" IS 'Unique session token for client authentication';
+
+COMMENT ON COLUMN "public"."authentication_sessions"."identity_type" IS 'Type of identity used for this session (ens, universal_profile, etc.)';
+
+COMMENT ON COLUMN "public"."authentication_sessions"."wallet_address" IS 'Wallet address used to create this session';
+
+COMMENT ON COLUMN "public"."authentication_sessions"."signed_message" IS 'Original message that was signed to create this session';
+
+COMMENT ON COLUMN "public"."authentication_sessions"."signature" IS 'Cryptographic signature proving wallet control';
+
+COMMENT ON COLUMN "public"."authentication_sessions"."created_at" IS 'When the session was created';
+
+COMMENT ON COLUMN "public"."authentication_sessions"."expires_at" IS 'When the session expires (30-day sessions)';
+
+COMMENT ON COLUMN "public"."authentication_sessions"."last_accessed_at" IS 'Last time this session was used';
+
+COMMENT ON COLUMN "public"."authentication_sessions"."is_active" IS 'Whether the session is currently active';
+
+CREATE UNIQUE INDEX authentication_sessions_session_token_key ON public.authentication_sessions USING btree (session_token);
+
+CREATE INDEX idx_auth_sessions_token ON public.authentication_sessions USING btree (session_token);
+
+CREATE INDEX idx_auth_sessions_user_active ON public.authentication_sessions USING btree (user_id, is_active);
+
+CREATE INDEX idx_auth_sessions_expires ON public.authentication_sessions USING btree (expires_at);
+
+CREATE INDEX idx_auth_sessions_wallet ON public.authentication_sessions USING btree (wallet_address) WHERE (wallet_address IS NOT NULL);
+
+CREATE INDEX idx_auth_sessions_user_created ON public.authentication_sessions USING btree (user_id, created_at);
+
+
 DROP TABLE IF EXISTS "boards";
 DROP SEQUENCE IF EXISTS boards_id_seq;
 CREATE SEQUENCE boards_id_seq INCREMENT 1 MINVALUE 1 MAXVALUE 2147483647 CACHE 1;
@@ -223,6 +273,9 @@ CREATE TABLE "public"."communities" (
     "plugin_id" text,
     "community_url" text,
     "logo_url" text,
+    "owner_user_id" text,
+    "is_public" boolean DEFAULT true NOT NULL,
+    "requires_approval" boolean DEFAULT false NOT NULL,
     CONSTRAINT "communities_pkey" PRIMARY KEY ("id")
 ) WITH (oids = false);
 
@@ -234,11 +287,21 @@ COMMENT ON COLUMN "public"."communities"."community_url" IS 'Community URL field
 
 COMMENT ON COLUMN "public"."communities"."logo_url" IS 'URL to the community logo/avatar image';
 
+COMMENT ON COLUMN "public"."communities"."owner_user_id" IS 'User who owns/created this community';
+
+COMMENT ON COLUMN "public"."communities"."is_public" IS 'Whether the community is publicly discoverable';
+
+COMMENT ON COLUMN "public"."communities"."requires_approval" IS 'Whether joining requires owner approval';
+
 CREATE INDEX communities_settings_index ON public.communities USING gin (settings);
 
 CREATE INDEX idx_communities_short_id ON public.communities USING btree (community_short_id);
 
 CREATE INDEX idx_communities_plugin_id ON public.communities USING btree (plugin_id);
+
+CREATE INDEX idx_communities_owner ON public.communities USING btree (owner_user_id);
+
+CREATE INDEX idx_communities_public ON public.communities USING btree (is_public) WHERE (is_public = true);
 
 
 DELIMITER ;;
@@ -756,7 +819,12 @@ CREATE TABLE "public"."user_communities" (
     "visit_count" integer DEFAULT '1' NOT NULL,
     "created_at" timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "updated_at" timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT "user_communities_pkey" PRIMARY KEY ("id")
+    "role" character varying(20) DEFAULT 'member' NOT NULL,
+    "status" character varying(20) DEFAULT 'active' NOT NULL,
+    "invited_by_user_id" text,
+    CONSTRAINT "user_communities_pkey" PRIMARY KEY ("id"),
+    CONSTRAINT "check_user_community_role" CHECK ((role)::text = ANY ((ARRAY['member'::character varying, 'moderator'::character varying, 'admin'::character varying, 'owner'::character varying])::text[])),
+    CONSTRAINT "check_user_community_status" CHECK ((status)::text = ANY ((ARRAY['active'::character varying, 'pending'::character varying, 'banned'::character varying, 'left'::character varying])::text[]))
 ) WITH (oids = false);
 
 COMMENT ON COLUMN "public"."user_communities"."user_id" IS 'Common Ground user ID';
@@ -769,6 +837,12 @@ COMMENT ON COLUMN "public"."user_communities"."last_visited_at" IS 'Last time us
 
 COMMENT ON COLUMN "public"."user_communities"."visit_count" IS 'Number of times user has visited this community';
 
+COMMENT ON COLUMN "public"."user_communities"."role" IS 'User role in the community (member, moderator, admin, owner)';
+
+COMMENT ON COLUMN "public"."user_communities"."status" IS 'Membership status (active, pending, banned, left)';
+
+COMMENT ON COLUMN "public"."user_communities"."invited_by_user_id" IS 'User who invited this member (if applicable)';
+
 CREATE UNIQUE INDEX user_communities_user_community_unique ON public.user_communities USING btree (user_id, community_id);
 
 CREATE INDEX idx_user_communities_user_id ON public.user_communities USING btree (user_id);
@@ -778,6 +852,14 @@ CREATE INDEX idx_user_communities_community_id ON public.user_communities USING 
 CREATE INDEX idx_user_communities_last_visited ON public.user_communities USING btree (last_visited_at);
 
 CREATE INDEX idx_user_communities_user_last_visited ON public.user_communities USING btree (user_id, last_visited_at);
+
+CREATE INDEX idx_user_communities_community_status ON public.user_communities USING btree (community_id, status);
+
+CREATE INDEX idx_user_communities_user_status ON public.user_communities USING btree (user_id, status);
+
+CREATE INDEX idx_user_communities_role ON public.user_communities USING btree (role);
+
+CREATE INDEX idx_user_communities_invited_by ON public.user_communities USING btree (invited_by_user_id) WHERE (invited_by_user_id IS NOT NULL);
 
 
 DELIMITER ;;
@@ -846,16 +928,49 @@ CREATE TABLE "public"."users" (
     "profile_picture_url" text,
     "updated_at" timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "settings" jsonb DEFAULT '{}' NOT NULL,
-    CONSTRAINT "users_pkey" PRIMARY KEY ("user_id")
+    "identity_type" character varying(20) DEFAULT 'legacy' NOT NULL,
+    "wallet_address" text,
+    "ens_domain" text,
+    "up_address" text,
+    "is_anonymous" boolean DEFAULT false NOT NULL,
+    "auth_expires_at" timestamptz,
+    "last_auth_at" timestamptz,
+    CONSTRAINT "users_pkey" PRIMARY KEY ("user_id"),
+    CONSTRAINT "check_identity_type" CHECK ((identity_type)::text = ANY ((ARRAY['legacy'::character varying, 'ens'::character varying, 'universal_profile'::character varying, 'anonymous'::character varying])::text[])),
+    CONSTRAINT "check_identity_data" CHECK ((((identity_type)::text = 'legacy'::text) AND (wallet_address IS NULL)) OR (((identity_type)::text = 'ens'::text) AND (ens_domain IS NOT NULL) AND (wallet_address IS NOT NULL)) OR (((identity_type)::text = 'universal_profile'::text) AND (up_address IS NOT NULL)) OR (((identity_type)::text = 'anonymous'::text) AND (is_anonymous = true)))
 ) WITH (oids = false);
 
 COMMENT ON COLUMN "public"."users"."settings" IS 'JSON field for storing additional user data from Common Ground (LUKSO address, social handles, premium status, etc.)';
+
+COMMENT ON COLUMN "public"."users"."identity_type" IS 'Type of identity: legacy (CG), ens, universal_profile, anonymous';
+
+COMMENT ON COLUMN "public"."users"."wallet_address" IS 'Primary wallet address for ENS/UP identities';
+
+COMMENT ON COLUMN "public"."users"."ens_domain" IS 'ENS domain name for ENS-based identities';
+
+COMMENT ON COLUMN "public"."users"."up_address" IS 'Universal Profile address for UP-based identities';
+
+COMMENT ON COLUMN "public"."users"."is_anonymous" IS 'True for temporary anonymous users';
+
+COMMENT ON COLUMN "public"."users"."auth_expires_at" IS 'When current authentication expires (30-day sessions)';
+
+COMMENT ON COLUMN "public"."users"."last_auth_at" IS 'Last time user completed wallet authentication';
 
 CREATE INDEX idx_users_name_search ON public.users USING gin (to_tsvector('english'::regconfig, name)) WHERE (name IS NOT NULL);
 
 CREATE INDEX idx_users_name_prefix ON public.users USING btree (name text_pattern_ops) WHERE (name IS NOT NULL);
 
 CREATE INDEX idx_users_settings ON public.users USING gin (settings);
+
+CREATE INDEX idx_users_identity_type ON public.users USING btree (identity_type);
+
+CREATE INDEX idx_users_wallet_address ON public.users USING btree (wallet_address) WHERE (wallet_address IS NOT NULL);
+
+CREATE INDEX idx_users_ens_domain ON public.users USING btree (ens_domain) WHERE (ens_domain IS NOT NULL);
+
+CREATE INDEX idx_users_up_address ON public.users USING btree (up_address) WHERE (up_address IS NOT NULL);
+
+CREATE INDEX idx_users_auth_expires ON public.users USING btree (auth_expires_at) WHERE (auth_expires_at IS NOT NULL);
 
 
 DROP TABLE IF EXISTS "votes";
@@ -877,6 +992,8 @@ ALTER TABLE ONLY "public"."ai_usage_logs" ADD CONSTRAINT "ai_usage_logs_conversa
 ALTER TABLE ONLY "public"."ai_usage_logs" ADD CONSTRAINT "ai_usage_logs_message_id_fkey" FOREIGN KEY (message_id) REFERENCES ai_messages(id) ON DELETE CASCADE NOT DEFERRABLE;
 ALTER TABLE ONLY "public"."ai_usage_logs" ADD CONSTRAINT "ai_usage_logs_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE NOT DEFERRABLE;
 
+ALTER TABLE ONLY "public"."authentication_sessions" ADD CONSTRAINT "authentication_sessions_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE NOT DEFERRABLE;
+
 ALTER TABLE ONLY "public"."boards" ADD CONSTRAINT "boards_community_id_fkey" FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE NOT DEFERRABLE;
 
 ALTER TABLE ONLY "public"."bookmarks" ADD CONSTRAINT "bookmarks_community_id_fkey" FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE NOT DEFERRABLE;
@@ -886,6 +1003,8 @@ ALTER TABLE ONLY "public"."bookmarks" ADD CONSTRAINT "bookmarks_user_id_fkey" FO
 ALTER TABLE ONLY "public"."comments" ADD CONSTRAINT "comments_author_user_id_fkey" FOREIGN KEY (author_user_id) REFERENCES users(user_id) ON DELETE CASCADE NOT DEFERRABLE;
 ALTER TABLE ONLY "public"."comments" ADD CONSTRAINT "comments_parent_comment_id_fkey" FOREIGN KEY (parent_comment_id) REFERENCES comments(id) ON DELETE CASCADE NOT DEFERRABLE;
 ALTER TABLE ONLY "public"."comments" ADD CONSTRAINT "comments_post_id_fkey" FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE NOT DEFERRABLE;
+
+ALTER TABLE ONLY "public"."communities" ADD CONSTRAINT "communities_owner_user_id_fkey" FOREIGN KEY (owner_user_id) REFERENCES users(user_id) ON DELETE SET NULL NOT DEFERRABLE;
 
 ALTER TABLE ONLY "public"."community_partnerships" ADD CONSTRAINT "community_partnerships_invited_by_fkey" FOREIGN KEY (invited_by_user_id) REFERENCES users(user_id) NOT DEFERRABLE;
 ALTER TABLE ONLY "public"."community_partnerships" ADD CONSTRAINT "community_partnerships_responded_by_fkey" FOREIGN KEY (responded_by_user_id) REFERENCES users(user_id) NOT DEFERRABLE;
@@ -925,6 +1044,7 @@ ALTER TABLE ONLY "public"."telegram_notifications" ADD CONSTRAINT "telegram_noti
 ALTER TABLE ONLY "public"."telegram_notifications" ADD CONSTRAINT "telegram_notifications_telegram_group_id_fkey" FOREIGN KEY (telegram_group_id) REFERENCES telegram_groups(id) ON DELETE CASCADE NOT DEFERRABLE;
 
 ALTER TABLE ONLY "public"."user_communities" ADD CONSTRAINT "user_communities_community_id_fkey" FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE NOT DEFERRABLE;
+ALTER TABLE ONLY "public"."user_communities" ADD CONSTRAINT "user_communities_invited_by_user_id_fkey" FOREIGN KEY (invited_by_user_id) REFERENCES users(user_id) ON DELETE SET NULL NOT DEFERRABLE;
 ALTER TABLE ONLY "public"."user_communities" ADD CONSTRAINT "user_communities_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE NOT DEFERRABLE;
 
 ALTER TABLE ONLY "public"."user_friends" ADD CONSTRAINT "user_friends_friend_user_id_fkey" FOREIGN KEY (friend_user_id) REFERENCES users(user_id) ON DELETE CASCADE NOT DEFERRABLE;
@@ -1002,4 +1122,4 @@ CREATE VIEW "lock_stats" AS SELECT l.id,
      LEFT JOIN boards b ON ((((((b.settings -> 'permissions'::text) -> 'locks'::text) ->> 'lockIds'::text) IS NOT NULL) AND (jsonb_typeof((((b.settings -> 'permissions'::text) -> 'locks'::text) -> 'lockIds'::text)) = 'array'::text) AND ((((b.settings -> 'permissions'::text) -> 'locks'::text) -> 'lockIds'::text) @> to_jsonb(l.id)))))
   GROUP BY l.id;
 
--- 2025-07-08 16:42:41 UTC
+-- 2025-07-12 19:34:33 UTC
