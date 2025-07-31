@@ -418,7 +418,7 @@ export default function BoardSettingsPage() {
                 isLoading={updateBoardMutation.isPending}
                 theme={theme}
                 showSaveButton={false}
-                autoSave={false}
+                autoSave={true}
               />
             ) : (
               <div className="space-y-4">
@@ -442,14 +442,14 @@ export default function BoardSettingsPage() {
             defaultExpanded={true}
             summary={getWriteAccessSummary}
           >
-            <BoardLockGatingForm
-              currentSettings={boardSettings}
-              onSave={setBoardSettings}
-              isLoading={updateBoardMutation.isPending}
-              theme={theme}
-              showSaveButton={false}
-              autoSave={false}
-            />
+                      <BoardLockGatingForm
+            currentSettings={boardSettings}
+            onSave={setBoardSettings}
+            isLoading={updateBoardMutation.isPending}
+            theme={theme}
+            showSaveButton={false}
+            autoSave={true}
+          />
           </CollapsibleSection>
 
           {/* AI Auto-Moderation Settings */}
