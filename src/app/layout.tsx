@@ -8,6 +8,9 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { MainLayoutWithSidebar } from "@/components/layout/MainLayoutWithSidebar";
 import { ResponsiveToaster } from "@/components/ui/responsive-toaster";
 import { GlobalSearchModal } from "@/components/search/GlobalSearchModal";
+import { ChatModalWrapper } from "@/components/ChatModalWrapper";
+import { ChatSessionProvider } from "@/contexts/ChatSessionContext";
+import { ChatProvider } from "@curia_/curia-chat-modal";
 import { BackgroundProvider } from "@/contexts/BackgroundContext";
 import { Suspense } from "react";
 
@@ -65,10 +68,15 @@ export default function RootLayout({
           >
             <Providers>
               <BackgroundProvider>
-                <Suspense fallback={<div>Loading application...</div>}>
-                  <MainLayoutWithSidebar>{children}</MainLayoutWithSidebar>
-                  <GlobalSearchModal />
-                </Suspense>
+                <ChatProvider>
+                  <ChatSessionProvider>
+                    <Suspense fallback={<div>Loading application...</div>}>
+                      <MainLayoutWithSidebar>{children}</MainLayoutWithSidebar>
+                      <GlobalSearchModal />
+                      <ChatModalWrapper />
+                    </Suspense>
+                  </ChatSessionProvider>
+                </ChatProvider>
               </BackgroundProvider>
             </Providers>
             <ResponsiveToaster />

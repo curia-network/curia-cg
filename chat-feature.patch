@@ -1,0 +1,2817 @@
+diff --git a/Dockerfile b/Dockerfile
+index 3491e66..8ad23b4 100644
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -33,6 +33,11 @@ ARG STORAGE_BUCKET_NAME
+ ARG STORAGE_REGION
+ ARG STORAGE_ENDPOINT_URL
+ ARG STORAGE_PUBLIC_URL_PREFIX
++ARG NEXT_PUBLIC_CHAT_BASE_URL
++ARG IRC_DATABASE_URL
++ARG NEXT_PUBLIC_CURIA_BASE_URL
++ARG SOJU_ADMIN_API_TOKEN
++ARG SOJU_SIDECAR_URL
+ 
+ # Copy package.json and yarn.lock first to leverage Docker cache
+ COPY package.json yarn.lock ./
+diff --git a/migrations/1754421618969_create-chat-channels-table.ts b/migrations/1754421618969_create-chat-channels-table.ts
+new file mode 100644
+index 0000000..5163cb0
+--- /dev/null
++++ b/migrations/1754421618969_create-chat-channels-table.ts
+@@ -0,0 +1,114 @@
++import { ColumnDefinitions, MigrationBuilder } from 'node-pg-migrate';
++
++export const shorthands: ColumnDefinitions | undefined = undefined;
++
++export async function up(pgm: MigrationBuilder): Promise<void> {
++  // Create chat_channels_id_seq sequence
++  pgm.createSequence('chat_channels_id_seq', {
++    increment: 1,
++    minvalue: 1,
++    maxvalue: 2147483647,
++    cache: 1,
++  });
++
++  // Create chat_channels table
++  pgm.createTable('chat_channels', {
++    id: {
++      type: 'integer',
++      primaryKey: true,
++      default: pgm.func("nextval('chat_channels_id_seq')"),
++      notNull: true,
++    },
++    community_id: {
++      type: 'text',
++      notNull: true,
++      references: '"communities"',
++      onDelete: 'CASCADE',
++    },
++    name: {
++      type: 'varchar(255)',
++      notNull: true,
++    },
++    description: {
++      type: 'text',
++      notNull: false,
++    },
++    irc_channel_name: {
++      type: 'varchar(255)',
++      notNull: true,
++    },
++    is_single_mode: {
++      type: 'boolean',
++      notNull: true,
++      default: true,
++    },
++    is_default: {
++      type: 'boolean',
++      notNull: true,
++      default: false,
++    },
++    created_at: {
++      type: 'timestamptz',
++      notNull: true,
++      default: pgm.func('CURRENT_TIMESTAMP'),
++    },
++    updated_at: {
++      type: 'timestamptz',
++      notNull: true,
++      default: pgm.func('CURRENT_TIMESTAMP'),
++    },
++    settings: {
++      type: 'jsonb',
++      notNull: true,
++      default: '{}',
++    },
++  });
++
++  // Create indexes
++  pgm.createIndex('chat_channels', 'community_id');
++  pgm.createIndex('chat_channels', ['community_id', 'name'], { unique: true });
++  pgm.createIndex('chat_channels', ['community_id', 'irc_channel_name'], { unique: true });
++  pgm.createIndex('chat_channels', 'settings', { method: 'gin' });
++  pgm.createIndex('chat_channels', 'is_single_mode');
++  pgm.createIndex('chat_channels', ['community_id', 'is_default'], { 
++    where: 'is_default = true',
++    name: 'chat_channels_community_default_idx'
++  });
++
++  // Add trigger for updating updated_at timestamp
++  pgm.createTrigger('chat_channels', 'set_timestamp_chat_channels', {
++    when: 'BEFORE',
++    operation: 'UPDATE',
++    function: 'trigger_set_timestamp',
++    level: 'ROW',
++  });
++
++  // Add constraint to ensure only one default channel per community
++  pgm.addConstraint('chat_channels', 'chat_channels_one_default_per_community', 
++    'EXCLUDE (community_id WITH =) WHERE (is_default = true)'
++  );
++}
++
++export async function down(pgm: MigrationBuilder): Promise<void> {
++  // Drop constraint first
++  pgm.dropConstraint('chat_channels', 'chat_channels_one_default_per_community');
++  
++  // Drop trigger
++  pgm.dropTrigger('chat_channels', 'set_timestamp_chat_channels');
++  
++  // Drop indexes (table drop will handle this, but being explicit)
++  pgm.dropIndex('chat_channels', ['community_id', 'is_default'], { 
++    name: 'chat_channels_community_default_idx'
++  });
++  pgm.dropIndex('chat_channels', 'is_single_mode');
++  pgm.dropIndex('chat_channels', 'settings');
++  pgm.dropIndex('chat_channels', ['community_id', 'irc_channel_name']);
++  pgm.dropIndex('chat_channels', ['community_id', 'name']);
++  pgm.dropIndex('chat_channels', 'community_id');
++  
++  // Drop table
++  pgm.dropTable('chat_channels');
++  
++  // Drop sequence
++  pgm.dropSequence('chat_channels_id_seq');
++}
+diff --git a/package.json b/package.json
+index 674e58e..200171c 100644
+--- a/package.json
++++ b/package.json
+@@ -20,7 +20,7 @@
+     "@ai-sdk/openai": "1.3.22",
+     "@curia_/cg-plugin-lib": "^1.0.8",
+     "@curia_/cg-plugin-lib-host": "^1.0.2",
+-    "@curia_/curia-chat-modal": "^1.0.0",
++    "@curia_/curia-chat-modal": "^4.0.0",
+     "@curia_/iframe-api-proxy": "1.4.0",
+     "@emoji-mart/data": "^1.2.1",
+     "@emoji-mart/react": "^1.1.1",
+diff --git a/src/app/api/communities/[communityId]/chat-channels/[channelId]/route.ts b/src/app/api/communities/[communityId]/chat-channels/[channelId]/route.ts
+new file mode 100644
+index 0000000..8e5842a
+--- /dev/null
++++ b/src/app/api/communities/[communityId]/chat-channels/[channelId]/route.ts
+@@ -0,0 +1,277 @@
++import { NextResponse } from 'next/server';
++import { withAuth, AuthenticatedRequest, RouteContext } from '@/lib/withAuth';
++import { ChatChannelQueries } from '@/lib/queries/chatChannels';
++import { resolveChannel } from '@/lib/chatChannelPermissions';
++import { ApiChatChannel, UpdateChatChannelRequest } from '@/types/chatChannels';
++
++// GET /api/communities/[communityId]/chat-channels/[channelId] - Get single channel details
++async function getChannelHandler(req: AuthenticatedRequest, context: RouteContext) {
++  const params = await context.params;
++  const { communityId, channelId } = params;
++  const requestingUserId = req.user?.sub;
++  const requestingUserCommunityId = req.user?.cid;
++
++  if (!communityId || !channelId) {
++    return NextResponse.json({ 
++      error: 'Community ID and Channel ID are required' 
++    }, { status: 400 });
++  }
++
++  // Security check: Users can only view channels in their own community
++  if (communityId !== requestingUserCommunityId) {
++    return NextResponse.json({ 
++      error: 'Forbidden: You can only view channels in your own community.' 
++    }, { status: 403 });
++  }
++
++  try {
++    const channelIdNum = parseInt(channelId, 10);
++    if (isNaN(channelIdNum)) {
++      return NextResponse.json({ error: 'Invalid channel ID' }, { status: 400 });
++    }
++
++    // Use resolveChannel function which handles community ownership check
++    const channel = await resolveChannel(channelIdNum, communityId);
++
++    if (!channel) {
++      return NextResponse.json({ 
++        error: 'Channel not found or not accessible' 
++      }, { status: 404 });
++    }
++
++    // Convert to ApiChatChannel format
++    const channelResponse: ApiChatChannel = {
++      ...channel,
++      user_can_access: true, // If resolveChannel returned it, user can access it
++      user_can_join: true,   // Same logic for now
++    };
++
++    console.log(`[API GET /api/communities/${communityId}/chat-channels/${channelId}] User ${requestingUserId} accessed channel: ${channel.name}`);
++
++    return NextResponse.json({ channel: channelResponse });
++
++  } catch (error) {
++    console.error(`[API] Error fetching chat channel ${channelId}:`, error);
++    return NextResponse.json({ error: 'Failed to fetch chat channel' }, { status: 500 });
++  }
++}
++
++// PATCH /api/communities/[communityId]/chat-channels/[channelId] - Update channel settings (Admin only)
++async function updateChannelHandler(req: AuthenticatedRequest, context: RouteContext) {
++  const params = await context.params;
++  const { communityId, channelId } = params;
++  const requestingUserId = req.user?.sub;
++  const requestingUserCommunityId = req.user?.cid;
++
++  if (!communityId || !channelId) {
++    return NextResponse.json({ 
++      error: 'Community ID and Channel ID are required' 
++    }, { status: 400 });
++  }
++
++  // Security check: Only allow updating channels in user's own community
++  if (communityId !== requestingUserCommunityId) {
++    return NextResponse.json({ 
++      error: 'Forbidden: You can only update channels in your own community.' 
++    }, { status: 403 });
++  }
++
++  try {
++    const channelIdNum = parseInt(channelId, 10);
++    if (isNaN(channelIdNum)) {
++      return NextResponse.json({ error: 'Invalid channel ID' }, { status: 400 });
++    }
++
++    const body: UpdateChatChannelRequest = await req.json();
++    const { name, description, irc_channel_name, is_single_mode, is_default, settings = {} } = body;
++
++    // Validate settings if provided
++    if (settings && Object.keys(settings).length > 0) {
++      // Basic validation - could be enhanced with a proper schema validator
++      if (settings.permissions?.allowedRoles && !Array.isArray(settings.permissions.allowedRoles)) {
++        return NextResponse.json({ error: 'allowedRoles must be an array' }, { status: 400 });
++      }
++
++      // Validate lock gating configuration
++      if (settings.permissions?.locks) {
++        const locks = settings.permissions.locks;
++        
++        if (!Array.isArray(locks.lockIds)) {
++          return NextResponse.json({ error: 'locks.lockIds must be an array' }, { status: 400 });
++        }
++        
++        if (!locks.lockIds.every((id: unknown) => typeof id === 'number')) {
++          return NextResponse.json({ error: 'All lock IDs must be numbers' }, { status: 400 });
++        }
++        
++        if (locks.fulfillment && !['any', 'all'].includes(locks.fulfillment)) {
++          return NextResponse.json({ error: 'locks.fulfillment must be "any" or "all"' }, { status: 400 });
++        }
++        
++        if (locks.verificationDuration && (typeof locks.verificationDuration !== 'number' || locks.verificationDuration <= 0)) {
++          return NextResponse.json({ error: 'locks.verificationDuration must be a positive number' }, { status: 400 });
++        }
++      }
++
++      // Validate IRC settings
++      if (settings.irc) {
++        const ircSettings = settings.irc;
++        if (ircSettings.autoconnect !== undefined && typeof ircSettings.autoconnect !== 'boolean') {
++          return NextResponse.json({ error: 'irc.autoconnect must be a boolean' }, { status: 400 });
++        }
++        if (ircSettings.lockchannel !== undefined && typeof ircSettings.lockchannel !== 'boolean') {
++          return NextResponse.json({ error: 'irc.lockchannel must be a boolean' }, { status: 400 });
++        }
++        if (ircSettings.nofocus !== undefined && typeof ircSettings.nofocus !== 'boolean') {
++          return NextResponse.json({ error: 'irc.nofocus must be a boolean' }, { status: 400 });
++        }
++      }
++
++      // Validate UI settings
++      if (settings.ui) {
++        const uiSettings = settings.ui;
++        if (uiSettings.defaultTheme && !['auto', 'light', 'dark'].includes(uiSettings.defaultTheme)) {
++          return NextResponse.json({ error: 'ui.defaultTheme must be "auto", "light", or "dark"' }, { status: 400 });
++        }
++      }
++    }
++
++    // Check if channel name is being changed and if it's unique
++    if (name !== undefined) {
++      const isNameUnique = await ChatChannelQueries.isChannelNameUnique(name.trim(), communityId, channelIdNum);
++      if (!isNameUnique) {
++        return NextResponse.json({ error: 'A channel with this name already exists' }, { status: 409 });
++      }
++    }
++
++    // If setting as default, ensure no other default channel exists
++    if (is_default === true) {
++      const existingDefault = await ChatChannelQueries.getDefaultChannel(communityId);
++      if (existingDefault && existingDefault.id !== channelIdNum) {
++        return NextResponse.json({ 
++          error: 'A default channel already exists. Only one default channel is allowed per community.' 
++        }, { status: 409 });
++      }
++    }
++
++    // Update channel
++    const updatedChannel = await ChatChannelQueries.updateChannel(channelIdNum, communityId, {
++      name,
++      description,
++      irc_channel_name,
++      is_single_mode,
++      is_default,
++      settings
++    });
++
++    if (!updatedChannel) {
++      return NextResponse.json({ error: 'Channel not found' }, { status: 404 });
++    }
++
++    console.log(`[API] Chat channel updated: ${updatedChannel.name} (ID: ${updatedChannel.id}) by user ${requestingUserId}`);
++
++    // Emit socket event for channel update
++    const emitter = process.customEventEmitter;
++    if (emitter && typeof emitter.emit === 'function') {
++      emitter.emit('broadcastEvent', {
++        room: `community:${communityId}`,
++        eventName: 'chatChannelUpdated',
++        payload: { 
++          channel: updatedChannel, 
++          updated_by: requestingUserId,
++          communityId: communityId,
++          communityShortId: req.user?.communityShortId,
++          pluginId: req.user?.pluginId
++        }
++      });
++      console.log('[API PATCH /api/communities/.../chat-channels/...] Successfully emitted chatChannelUpdated event.');
++    }
++
++    return NextResponse.json(updatedChannel);
++
++  } catch (error) {
++    console.error(`[API] Error updating chat channel ${channelId}:`, error);
++    if (error instanceof SyntaxError) {
++      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
++    }
++    return NextResponse.json({ error: 'Failed to update chat channel' }, { status: 500 });
++  }
++}
++
++// DELETE /api/communities/[communityId]/chat-channels/[channelId] - Delete channel (Admin only)
++async function deleteChannelHandler(req: AuthenticatedRequest, context: RouteContext) {
++  const params = await context.params;
++  const { communityId, channelId } = params;
++  const requestingUserId = req.user?.sub;
++  const requestingUserCommunityId = req.user?.cid;
++
++  if (!communityId || !channelId) {
++    return NextResponse.json({ 
++      error: 'Community ID and Channel ID are required' 
++    }, { status: 400 });
++  }
++
++  // Security check: Only allow deleting channels in user's own community
++  if (communityId !== requestingUserCommunityId) {
++    return NextResponse.json({ 
++      error: 'Forbidden: You can only delete channels in your own community.' 
++    }, { status: 403 });
++  }
++
++  try {
++    const channelIdNum = parseInt(channelId, 10);
++    if (isNaN(channelIdNum)) {
++      return NextResponse.json({ error: 'Invalid channel ID' }, { status: 400 });
++    }
++
++    // Check if the channel exists and get its details for validation
++    const existingChannel = await ChatChannelQueries.getChannelById(channelIdNum, communityId);
++    if (!existingChannel) {
++      return NextResponse.json({ error: 'Channel not found' }, { status: 404 });
++    }
++
++    // Prevent deletion of default channel
++    if (existingChannel.is_default) {
++      return NextResponse.json({ 
++        error: 'Cannot delete the default channel. Please set another channel as default first.' 
++      }, { status: 400 });
++    }
++
++    // Delete the channel
++    const deleted = await ChatChannelQueries.deleteChannel(channelIdNum, communityId);
++
++    if (!deleted) {
++      return NextResponse.json({ error: 'Channel not found' }, { status: 404 });
++    }
++
++    console.log(`[API] Chat channel deleted: ${existingChannel.name} (ID: ${channelId}) by user ${requestingUserId}`);
++
++    // Emit socket event for channel deletion
++    const emitter = process.customEventEmitter;
++    if (emitter && typeof emitter.emit === 'function') {
++      emitter.emit('broadcastEvent', {
++        room: `community:${communityId}`,
++        eventName: 'chatChannelDeleted',
++        payload: { 
++          channelId: channelIdNum,
++          channelName: existingChannel.name,
++          deleted_by: requestingUserId,
++          communityId: communityId,
++          communityShortId: req.user?.communityShortId,
++          pluginId: req.user?.pluginId
++        }
++      });
++      console.log('[API DELETE /api/communities/.../chat-channels/...] Successfully emitted chatChannelDeleted event.');
++    }
++
++    return NextResponse.json({ message: 'Chat channel deleted successfully' });
++
++  } catch (error) {
++    console.error(`[API] Error deleting chat channel ${channelId}:`, error);
++    return NextResponse.json({ error: 'Failed to delete chat channel' }, { status: 500 });
++  }
++}
++
++export const GET = withAuth(getChannelHandler, false); // Any authenticated user
++export const PATCH = withAuth(updateChannelHandler, true); // Admin only
++export const DELETE = withAuth(deleteChannelHandler, true); // Admin only
+\ No newline at end of file
+diff --git a/src/app/api/communities/[communityId]/chat-channels/route.ts b/src/app/api/communities/[communityId]/chat-channels/route.ts
+new file mode 100644
+index 0000000..8de7494
+--- /dev/null
++++ b/src/app/api/communities/[communityId]/chat-channels/route.ts
+@@ -0,0 +1,247 @@
++import { NextResponse } from 'next/server';
++import { withAuth, AuthenticatedRequest, RouteContext } from '@/lib/withAuth';
++import { ChatChannelQueries } from '@/lib/queries/chatChannels';
++import { filterAccessibleChatChannels, canUserAccessChatChannel, generateIrcChannelName } from '@/lib/chatChannelPermissions';
++import { CreateChatChannelRequest } from '@/types/chatChannels';
++import { query } from '@/lib/db';
++
++// GET /api/communities/[communityId]/chat-channels - List community chat channels
++async function getCommunityChannelsHandler(req: AuthenticatedRequest, context: RouteContext) {
++  const params = await context.params;
++  const { communityId } = params;
++  const requestingUserId = req.user?.sub;
++  const requestingUserCommunityId = req.user?.cid;
++  const userRoles = req.user?.roles;
++  const isAdmin = req.user?.adm || false;
++
++  if (!communityId) {
++    return NextResponse.json({ error: 'Community ID is required' }, { status: 400 });
++  }
++
++  // Security check: Users can only view channels in their own community
++  if (communityId !== requestingUserCommunityId) {
++    return NextResponse.json({ 
++      error: 'Forbidden: You can only view channels in your own community.' 
++    }, { status: 403 });
++  }
++
++  try {
++    // Get all channels for this community
++    let allChannels = await ChatChannelQueries.getChannelsByCommunity(communityId);
++    
++    // AUTO-CREATE DEFAULT CHANNEL: If no channels exist, create one using community name
++    if (allChannels.length === 0) {
++      console.log(`[API GET /api/communities/${communityId}/chat-channels] No channels found, auto-creating default channel`);
++      
++      try {
++        // Get community name for channel creation
++        const communityResult = await query(
++          'SELECT name FROM communities WHERE id = $1',
++          [communityId]
++        );
++        
++        if (communityResult.rows.length === 0) {
++          console.error(`[API] Community ${communityId} not found during channel auto-creation`);
++          return NextResponse.json({ error: 'Community not found' }, { status: 404 });
++        }
++        
++        const communityName = communityResult.rows[0].name;
++        console.log(`[API] Auto-creating default channel for community: ${communityName}`);
++        
++        // Create default channel using community name
++        const defaultChannel = await ChatChannelQueries.createChannel({
++          community_id: communityId,
++          name: communityName, // Use actual community name, not "General"
++          description: `Main chat for ${communityName}`,
++          irc_channel_name: generateIrcChannelName(communityName), // Auto-generated IRC name
++          is_single_mode: true,
++          is_default: true,
++          settings: {
++            permissions: {
++              // No role restrictions - public to all community members
++            },
++            irc: {
++              autoconnect: true,
++              lockchannel: true,
++              nofocus: true,
++              welcomeMessage: `Welcome to ${communityName} chat!`
++            },
++            ui: {
++              defaultTheme: 'auto',
++              allowThemeSwitch: true,
++              showUserList: true,
++              allowMentions: true
++            }
++          }
++        });
++        
++        console.log(`[API] Successfully auto-created default channel: ${defaultChannel.name} (${defaultChannel.irc_channel_name})`);
++        allChannels = [defaultChannel]; // Use the newly created channel
++        
++      } catch (autoCreateError) {
++        console.error(`[API] Error auto-creating default channel for community ${communityId}:`, autoCreateError);
++        // Don't fail the request - just continue with empty channels
++        // This ensures backward compatibility if auto-creation fails
++      }
++    }
++    
++    // SECURITY: Filter channels based on user permissions
++    const accessibleChannels = filterAccessibleChatChannels(allChannels, userRoles, isAdmin);
++    
++    // Add access permission flags for each channel
++    const channelsWithPermissions = accessibleChannels.map(channel => ({
++      ...channel,
++      user_can_access: true, // All returned channels are accessible
++      user_can_join: canUserAccessChatChannel(userRoles, channel.settings, isAdmin) // Same logic for now, could be different in future
++    }));
++    
++    console.log(`[API GET /api/communities/${communityId}/chat-channels] User ${requestingUserId} can access ${channelsWithPermissions.length}/${allChannels.length} channels`);
++    
++    return NextResponse.json(channelsWithPermissions);
++
++  } catch (error) {
++    console.error(`[API] Error fetching chat channels for community ${communityId}:`, error);
++    return NextResponse.json({ error: 'Failed to fetch chat channels' }, { status: 500 });
++  }
++}
++
++// POST /api/communities/[communityId]/chat-channels - Create new chat channel (admin only)
++async function createChannelHandler(req: AuthenticatedRequest, context: RouteContext) {
++  const params = await context.params;
++  const { communityId } = params;
++  const requestingUserId = req.user?.sub;
++  const requestingUserCommunityId = req.user?.cid;
++
++  if (!communityId) {
++    return NextResponse.json({ error: 'Community ID is required' }, { status: 400 });
++  }
++
++  // Security check: Only allow creating channels in user's own community
++  if (communityId !== requestingUserCommunityId) {
++    return NextResponse.json({ 
++      error: 'Forbidden: You can only create channels in your own community.' 
++    }, { status: 403 });
++  }
++
++  try {
++    const body: CreateChatChannelRequest = await req.json();
++    const { name, description, irc_channel_name, is_single_mode = true, is_default = false, settings = {} } = body;
++
++    if (!name || !name.trim()) {
++      return NextResponse.json({ error: 'Channel name is required' }, { status: 400 });
++    }
++
++    // Validate settings if provided
++    if (settings && Object.keys(settings).length > 0) {
++      // Basic validation - could be enhanced with a proper schema validator
++      if (settings.permissions?.allowedRoles && !Array.isArray(settings.permissions.allowedRoles)) {
++        return NextResponse.json({ error: 'allowedRoles must be an array' }, { status: 400 });
++      }
++
++      // Validate lock gating configuration
++      if (settings.permissions?.locks) {
++        const locks = settings.permissions.locks;
++        
++        if (!Array.isArray(locks.lockIds)) {
++          return NextResponse.json({ error: 'locks.lockIds must be an array' }, { status: 400 });
++        }
++        
++        if (!locks.lockIds.every((id: unknown) => typeof id === 'number')) {
++          return NextResponse.json({ error: 'All lock IDs must be numbers' }, { status: 400 });
++        }
++        
++        if (locks.fulfillment && !['any', 'all'].includes(locks.fulfillment)) {
++          return NextResponse.json({ error: 'locks.fulfillment must be "any" or "all"' }, { status: 400 });
++        }
++        
++        if (locks.verificationDuration && (typeof locks.verificationDuration !== 'number' || locks.verificationDuration <= 0)) {
++          return NextResponse.json({ error: 'locks.verificationDuration must be a positive number' }, { status: 400 });
++        }
++      }
++
++      // Validate IRC settings
++      if (settings.irc) {
++        const ircSettings = settings.irc;
++        if (ircSettings.autoconnect !== undefined && typeof ircSettings.autoconnect !== 'boolean') {
++          return NextResponse.json({ error: 'irc.autoconnect must be a boolean' }, { status: 400 });
++        }
++        if (ircSettings.lockchannel !== undefined && typeof ircSettings.lockchannel !== 'boolean') {
++          return NextResponse.json({ error: 'irc.lockchannel must be a boolean' }, { status: 400 });
++        }
++        if (ircSettings.nofocus !== undefined && typeof ircSettings.nofocus !== 'boolean') {
++          return NextResponse.json({ error: 'irc.nofocus must be a boolean' }, { status: 400 });
++        }
++      }
++
++      // Validate UI settings
++      if (settings.ui) {
++        const uiSettings = settings.ui;
++        if (uiSettings.defaultTheme && !['auto', 'light', 'dark'].includes(uiSettings.defaultTheme)) {
++          return NextResponse.json({ error: 'ui.defaultTheme must be "auto", "light", or "dark"' }, { status: 400 });
++        }
++      }
++    }
++
++    // Check if channel name already exists in this community
++    const isNameUnique = await ChatChannelQueries.isChannelNameUnique(name.trim(), communityId);
++    if (!isNameUnique) {
++      return NextResponse.json({ error: 'A channel with this name already exists' }, { status: 409 });
++    }
++
++    // If setting as default, ensure no other default channel exists
++    if (is_default) {
++      const existingDefault = await ChatChannelQueries.getDefaultChannel(communityId);
++      if (existingDefault) {
++        return NextResponse.json({ 
++          error: 'A default channel already exists. Only one default channel is allowed per community.' 
++        }, { status: 409 });
++      }
++    }
++
++    // Create the channel
++    const newChannel = await ChatChannelQueries.createChannel({
++      community_id: communityId,
++      name: name.trim(),
++      description: description?.trim() || undefined,
++      irc_channel_name,
++      is_single_mode,
++      is_default,
++      settings
++    });
++
++    console.log(`[API] Chat channel created: ${newChannel.name} (ID: ${newChannel.id}) in community ${communityId} by user ${requestingUserId}`);
++
++    // Emit socket event for new channel creation
++    const emitter = process.customEventEmitter;
++    console.log('[API POST /api/communities/.../chat-channels] Attempting to use process.customEventEmitter. Emitter available:', !!emitter);
++    if (emitter && typeof emitter.emit === 'function') {
++      emitter.emit('broadcastEvent', {
++        room: `community:${communityId}`,
++        eventName: 'newChatChannel',
++        payload: { 
++          channel: newChannel, 
++          author_user_id: requestingUserId,
++          // Add community context for cross-community broadcasting
++          communityId: communityId,
++          communityShortId: req.user?.communityShortId,
++          pluginId: req.user?.pluginId
++        }
++      });
++      console.log('[API POST /api/communities/.../chat-channels] Successfully emitted newChatChannel event.');
++    } else {
++      console.error('[API POST /api/communities/.../chat-channels] ERROR: process.customEventEmitter not available.');
++    }
++
++    return NextResponse.json(newChannel, { status: 201 });
++
++  } catch (error) {
++    console.error(`[API] Error creating chat channel for community ${communityId}:`, error);
++    if (error instanceof SyntaxError) {
++      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
++    }
++    return NextResponse.json({ error: 'Failed to create chat channel' }, { status: 500 });
++  }
++}
++
++export const GET = withAuth(getCommunityChannelsHandler, false); // Any authenticated user
++export const POST = withAuth(createChannelHandler, true); // Admin only
+\ No newline at end of file
+diff --git a/src/app/api/irc-user-provision/route.ts b/src/app/api/irc-user-provision/route.ts
+new file mode 100644
+index 0000000..80a0acd
+--- /dev/null
++++ b/src/app/api/irc-user-provision/route.ts
+@@ -0,0 +1,96 @@
++import { NextResponse } from 'next/server';
++import { AuthenticatedRequest, withAuth } from '@/lib/withAuth';
++import { sojuAdminService } from '@/lib/SojuAdminService';
++import { 
++  generateIrcUsername, 
++  generateIrcNickname,
++  generateSecurePassword
++} from '@curia_/curia-chat-modal';
++
++// Using SojuAdminService instead of direct database access
++
++interface ProvisionResponse {
++  success: boolean;
++  ircUsername: string;
++  ircPassword: string; // Generated password for The Lounge
++  networkName: string;
++}
++
++async function provisionIrcUserHandler(req: AuthenticatedRequest) {
++  const user = req.user;
++  
++  if (!user) {
++    return NextResponse.json({ error: 'User not found' }, { status: 401 });
++  }
++
++  // Use community ID from JWT token instead of request body
++  const communityId = user.cid;
++  
++  if (!communityId) {
++    return NextResponse.json(
++      { error: 'Community ID not found in authentication token' }, 
++      { status: 400 }
++    );
++  }
++
++  try {
++    // Generate IRC username (avoid conflicts)
++    const ircUsername = generateIrcUsername(user.name || user.sub, user.sub);
++    
++    // Generate IRC-compliant nickname (stricter rules than username)
++    const ircNickname = generateIrcNickname(user.name || user.sub);
++    
++    // Generate secure password for IRC
++    const ircPassword = generateSecurePassword();
++
++    // Provision user (create or update) via admin interface (no restart needed!)
++    const provisionResult = await sojuAdminService.provisionUser({
++      ircUsername,
++      ircPassword,
++      nickname: ircNickname,
++      realname: user.name || ircUsername
++    });
++
++    if (!provisionResult.success) {
++      throw new Error(`Failed to provision user: ${provisionResult.error}`);
++    }
++
++    console.log('[IRC Provision] Successfully provisioned IRC user via admin interface:', {
++      ircUsername,
++      userId: user.sub,
++      userName: user.name,
++      communityId,
++      networkName: 'commonground',
++      timestamp: new Date().toISOString()
++    });
++
++    return NextResponse.json({
++      success: true,
++      ircUsername,
++      ircPassword, // Plain password for The Lounge login
++      networkName: 'commonground'
++    } as ProvisionResponse);
++    
++  } catch (error) {
++    console.error('[IRC Provision] Error provisioning IRC user:', {
++      error: error instanceof Error ? error.message : error,
++      stack: error instanceof Error ? error.stack : undefined,
++      userId: user.sub,
++      userName: user.name,
++      communityId,
++      timestamp: new Date().toISOString()
++    });
++    
++    // Return user-friendly error message
++    const userMessage = error instanceof Error && error.message.includes('connection') 
++      ? 'Unable to connect to chat service. Please try again.'
++      : 'Failed to set up chat access. Please try again or contact support.';
++      
++    return NextResponse.json(
++      { error: userMessage, details: error instanceof Error ? error.message : 'Unknown error' },
++      { status: 500 }
++    );
++  }
++}
++
++export const POST = withAuth(provisionIrcUserHandler, false);
+diff --git a/src/app/chat/[chatId]/page.tsx b/src/app/chat/[chatId]/page.tsx
+new file mode 100644
+index 0000000..c63d61e
+--- /dev/null
++++ b/src/app/chat/[chatId]/page.tsx
+@@ -0,0 +1,130 @@
++'use client';
++
++import React, { useState, useEffect } from 'react';
++import { useQuery } from '@tanstack/react-query';
++import { useAuth } from '@/contexts/AuthContext';
++import { useSearchParams, useRouter } from 'next/navigation';
++import { authFetchJson } from '@/utils/authFetch';
++import { ApiChatChannel } from '@/types/chatChannels';
++import { ChatPage, LoadingState, ErrorState } from '@curia_/curia-chat-modal';
++import { useChatSessionContext } from '@/contexts/ChatSessionContext';
++import { useEffectiveTheme } from '@/hooks/useEffectiveTheme';
++
++interface ChatPageProps {
++  params: Promise<{ chatId: string }>;
++}
++
++export default function Page({ params }: ChatPageProps) {
++  const [chatId, setChatId] = useState<string>('');
++  const { token, user } = useAuth();
++  const searchParams = useSearchParams();
++  const router = useRouter();
++  const theme = useEffectiveTheme();
++  const { 
++    sessionData, 
++    isInitialized, 
++    isLoading: isSessionLoading, 
++    initError, 
++    retryCount, 
++    isRetrying, 
++    retryInitialization 
++  } = useChatSessionContext();
++
++  useEffect(() => {
++    params.then(({ chatId }) => {
++      setChatId(chatId);
++    });
++  }, [params]);
++
++  // Fetch specific chat channel
++  const { data: chatChannel, isLoading: isChannelLoading, error: channelError } = useQuery<ApiChatChannel>({
++    queryKey: ['chatChannel', chatId],
++    queryFn: async () => {
++      if (!token || !user?.cid) throw new Error('No auth token');
++      
++      // First try to get from session data if available
++      if (sessionData?.channels) {
++        const existingChannel = sessionData.channels.find((ch: ApiChatChannel) => ch.id === parseInt(chatId));
++        if (existingChannel) {
++          return existingChannel;
++        }
++      }
++      
++      // Otherwise fetch from API
++      const response = await authFetchJson<ApiChatChannel[]>(
++        `/api/communities/${user.cid}/chat-channels`, 
++        { token }
++      );
++      
++      const channel = response.find(ch => ch.id === parseInt(chatId));
++      if (!channel) {
++        throw new Error('Chat channel not found');
++      }
++      
++      return channel;
++    },
++    enabled: !!token && !!chatId && !!user?.cid,
++  });
++
++  const isLoading = isSessionLoading || isChannelLoading;
++  const error = initError || channelError;
++
++  // Navigation helper
++  const handleClose = () => {
++    const params = new URLSearchParams(searchParams?.toString() || '');
++    params.delete('boardId');
++    const homeUrl = params.toString() ? `/?${params.toString()}` : '/';
++    router.push(homeUrl);
++  };
++
++  // Show loading state during session initialization, retries, or channel loading
++  if (isLoading || isRetrying) {
++    const message = isRetrying 
++      ? `Retrying connection (${retryCount}/3)...`
++      : "Loading chat...";
++    
++    return (
++      <div className="h-screen w-full flex items-center justify-center flex-col space-y-4">
++        <LoadingState />
++        <div className="text-center">
++          <p className="text-lg">{message}</p>
++        </div>
++      </div>
++    );
++  }
++
++  // Show error state after all retries failed or channel not found
++  if (error && (!isRetrying || retryCount >= 3)) {
++    return (
++      <ErrorState 
++        error={typeof error === 'string' ? error : error.message || 'Failed to load chat'}
++        onRetry={channelError ? () => window.location.reload() : retryInitialization}
++        className="h-screen w-full flex items-center justify-center"
++      />
++    );
++  }
++
++  // Don't show page if not ready yet (still initializing)
++  if (!isInitialized || !sessionData || !chatChannel) {
++    return (
++      <div className="h-screen w-full flex items-center justify-center">
++        <LoadingState />
++        <div className="text-center">
++          <p>Loading chat...</p>
++        </div>
++      </div>
++    );
++  }
++
++  // Render the ChatPage component - this will fill the entire viewport cleanly
++  return (
++    <ChatPage
++      ircCredentials={sessionData.ircCredentials}
++      channel={chatChannel}
++      chatBaseUrl={process.env.NEXT_PUBLIC_CHAT_BASE_URL}
++      theme={theme}
++      mode={chatChannel.is_single_mode ? 'single' : 'normal'}
++      onClose={handleClose}
++    />
++  );
++}
+\ No newline at end of file
+diff --git a/src/app/chat/layout.tsx b/src/app/chat/layout.tsx
+new file mode 100644
+index 0000000..512d0af
+--- /dev/null
++++ b/src/app/chat/layout.tsx
+@@ -0,0 +1,27 @@
++import { ChatLayout } from '@curia_/curia-chat-modal';
++import { Providers } from '../providers';
++import { ThemeProvider } from '@/components/theme-provider';
++import { Suspense } from 'react';
++
++interface ChatLayoutProps {
++  children: React.ReactNode;
++}
++
++export default function Layout({ children }: ChatLayoutProps) {
++  return (
++    <ThemeProvider
++      attribute="class"
++      defaultTheme="system"
++      enableSystem
++      disableTransitionOnChange
++    >
++      <Providers>
++        <Suspense fallback={<div className="h-screen w-full flex items-center justify-center">Loading chat...</div>}>
++          <ChatLayout>
++            {children}
++          </ChatLayout>
++        </Suspense>
++      </Providers>
++    </ThemeProvider>
++  );
++}
+\ No newline at end of file
+diff --git a/src/app/layout.tsx b/src/app/layout.tsx
+index e259c47..1f3829f 100644
+--- a/src/app/layout.tsx
++++ b/src/app/layout.tsx
+@@ -10,6 +10,7 @@ import { ResponsiveToaster } from "@/components/ui/responsive-toaster";
+ import { GlobalSearchModal } from "@/components/search/GlobalSearchModal";
+ import { WhatsNewModal } from "@/components/whats-new/WhatsNewModal";
+ import { ChatModalWrapper } from "@/components/ChatModalWrapper";
++import { ChatSessionProvider } from "@/contexts/ChatSessionContext";
+ import { BackgroundProvider } from "@/contexts/BackgroundContext";
+ import { Suspense } from "react";
+ import { ApiProxyServerComponent } from "@/components/ApiProxyServerComponent";
+@@ -74,12 +75,14 @@ export default function RootLayout({
+               {/* Initialize sidebar action listener for host service communication - needs GlobalSearchProvider */}
+               <SidebarActionListener />
+               <BackgroundProvider>
+-                <Suspense fallback={<div>Loading application...</div>}>
+-                  <MainLayoutWithSidebar>{children}</MainLayoutWithSidebar>
+-                  <GlobalSearchModal />
+-                  <WhatsNewModal />
+-                  <ChatModalWrapper />
+-                </Suspense>
++                <ChatSessionProvider>
++                  <Suspense fallback={<div>Loading application...</div>}>
++                    <MainLayoutWithSidebar>{children}</MainLayoutWithSidebar>
++                    <GlobalSearchModal />
++                    <WhatsNewModal />
++                    <ChatModalWrapper />
++                  </Suspense>
++                </ChatSessionProvider>
+               </BackgroundProvider>
+             </Providers>
+             <ResponsiveToaster />
+diff --git a/src/components/ChatModalWrapper.tsx b/src/components/ChatModalWrapper.tsx
+index 346ed37..c39dc0b 100644
+--- a/src/components/ChatModalWrapper.tsx
++++ b/src/components/ChatModalWrapper.tsx
+@@ -2,52 +2,84 @@
+ 
+ import React from 'react';
+ import { ChatModal, useChatModal } from '@curia_/curia-chat-modal';
+-import { useAuth } from '@/contexts/AuthContext';
+-import { useQuery } from '@tanstack/react-query';
+-import { authFetchJson } from '@/utils/authFetch';
+-
+-interface ApiCommunity {
+-  id: string;
+-  name: string;
+-  settings: Record<string, unknown>;
+-  created_at: string;
+-  updated_at: string;
+-}
++import { useEffectiveTheme } from '@/hooks/useEffectiveTheme';
++import { useChatSessionContext } from '@/contexts/ChatSessionContext';
++import { ChatLoadingModal } from '@/components/chat/ChatLoadingModal';
++import { ChatErrorModal } from '@/components/chat/ChatErrorModal';
+ 
+ export function ChatModalWrapper() {
+-  const { isChatOpen, closeChat } = useChatModal();
+-  const { user, token } = useAuth();
+-
+-  // Fetch community data
+-  const { data: community } = useQuery<ApiCommunity>({
+-    queryKey: ['community', user?.cid],
+-    queryFn: async () => {
+-      if (!token || !user?.cid) throw new Error('Community not available');
+-      return authFetchJson<ApiCommunity>(`/api/communities/${user.cid}`, { token });
+-    },
+-    enabled: !!token && !!user?.cid && isChatOpen, // Only fetch when modal is open
+-    staleTime: 10 * 60 * 1000, // 10 minutes
+-  });
+-
+-  // Don't render if modal is closed or missing data
+-  if (!isChatOpen || !user || !community) {
++  const { isChatOpen, selectedChannelId, closeChat } = useChatModal();
++  const { 
++    sessionData, 
++    isInitialized, 
++    isLoading, 
++    initError, 
++    retryCount, 
++    isRetrying, 
++    retryInitialization 
++  } = useChatSessionContext();
++  const theme = useEffectiveTheme();
++  
++  // Don't render anything if modal is closed
++  if (!isChatOpen) {
+     return null;
+   }
+ 
+-  const chatBaseUrl = process.env.NEXT_PUBLIC_CHAT_BASE_URL || 'https://chat.curia.network';
++  // Show loading state during initialization or retries
++  if (isLoading || isRetrying) {
++    const message = isRetrying 
++      ? `Retrying connection (${retryCount}/3)...`
++      : "Connecting to chat...";
++    
++    return (
++      <ChatLoadingModal 
++        message={message}
++        onClose={closeChat}
++      />
++    );
++  }
++
++  // Show error state after all retries failed
++  if (initError && !isRetrying && retryCount >= 3) {
++    return (
++      <ChatErrorModal 
++        error={initError}
++        retryCount={retryCount}
++        onRetry={retryInitialization}
++        onClose={closeChat}
++      />
++    );
++  }
++
++  // Don't show modal if not ready yet (still initializing)
++  if (!isInitialized || !sessionData) {
++    return null;
++  }
++
++  // Determine which channel to show
++  const targetChannel = selectedChannelId 
++    ? sessionData.channels.find((ch: any) => ch.id === selectedChannelId)
++    : sessionData.defaultChannel;
++
++  if (!targetChannel) {
++    console.error('[ChatModalWrapper] Invalid channel selection:', selectedChannelId);
++    return (
++      <ChatErrorModal 
++        error="Selected chat channel not found. Please try again."
++        onRetry={() => closeChat()}
++        onClose={closeChat}
++      />
++    );
++  }
+ 
+   return (
+     <ChatModal
+-      user={{
+-        id: user.userId,
+-        name: user.name || 'Anonymous'
+-      }}
+-      community={{
+-        id: community.id,
+-        name: community.name
+-      }}
+-      theme="light" // TODO: Get from theme context
+-      chatBaseUrl={chatBaseUrl}
++      // Pass pre-provisioned data - no API calls in modal!
++      ircCredentials={sessionData.ircCredentials}
++      channel={targetChannel}
++      chatBaseUrl={process.env.NEXT_PUBLIC_CHAT_BASE_URL} // 🎯 Prop drilling the env var!
++      theme={theme}
++      mode={targetChannel.is_single_mode ? 'single' : 'normal'}
+       onClose={closeChat}
+     />
+   );
+diff --git a/src/components/chat/ChatErrorModal.tsx b/src/components/chat/ChatErrorModal.tsx
+new file mode 100644
+index 0000000..4c47a36
+--- /dev/null
++++ b/src/components/chat/ChatErrorModal.tsx
+@@ -0,0 +1,100 @@
++'use client';
++
++import React from 'react';
++import { createPortal } from 'react-dom';
++import { AlertTriangle, RefreshCw, X } from 'lucide-react';
++import { cn } from '@/utils/cn';
++import { Button } from '@/components/ui/button';
++
++interface ChatErrorModalProps {
++  error: string;
++  retryCount?: number;
++  onRetry: () => void;
++  onClose: () => void;
++}
++
++export function ChatErrorModal({ 
++  error, 
++  retryCount = 0,
++  onRetry, 
++  onClose 
++}: ChatErrorModalProps) {
++  return createPortal(
++    <>
++      {/* Backdrop */}
++      <div 
++        className="fixed inset-0 bg-black/30 backdrop-blur-sm z-40 animate-in fade-in duration-200"
++        onClick={onClose}
++      />
++      
++      {/* Error Modal */}
++      <div 
++        className={cn(
++          "fixed z-50 bg-background shadow-2xl border rounded-lg",
++          "top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2",
++          "w-96 p-6",
++          "animate-in fade-in zoom-in-95 duration-200"
++        )}
++        role="dialog"
++        aria-modal="true"
++        aria-label="Chat error"
++      >
++        {/* Header */}
++        <div className="flex items-start justify-between mb-4">
++          <div className="flex items-center space-x-3">
++            <div className="flex-shrink-0">
++              <AlertTriangle className="h-6 w-6 text-destructive" />
++            </div>
++            <div>
++              <h3 className="text-lg font-semibold text-destructive">Chat Connection Failed</h3>
++              {retryCount > 0 && (
++                <p className="text-xs text-muted-foreground">
++                  Failed after {retryCount} attempt{retryCount > 1 ? 's' : ''}
++                </p>
++              )}
++            </div>
++          </div>
++          <Button
++            variant="ghost"
++            size="sm"
++            onClick={onClose}
++            className="h-6 w-6 p-0"
++          >
++            <X className="h-4 w-4" />
++          </Button>
++        </div>
++
++        {/* Error Message */}
++        <div className="mb-6">
++          <p className="text-sm text-muted-foreground mb-4">
++            {error}
++          </p>
++          <p className="text-xs text-muted-foreground">
++            This might be due to a temporary network issue or server problem.
++          </p>
++        </div>
++
++        {/* Actions */}
++        <div className="flex space-x-3">
++          <Button
++            onClick={onRetry}
++            className="flex-1"
++            size="sm"
++          >
++            <RefreshCw className="h-4 w-4 mr-2" />
++            Try Again
++          </Button>
++          <Button
++            onClick={onClose}
++            variant="outline"
++            size="sm"
++            className="flex-1"
++          >
++            Close
++          </Button>
++        </div>
++      </div>
++    </>,
++    document.body
++  );
++}
+\ No newline at end of file
+diff --git a/src/components/chat/ChatLoadingModal.tsx b/src/components/chat/ChatLoadingModal.tsx
+new file mode 100644
+index 0000000..def0728
+--- /dev/null
++++ b/src/components/chat/ChatLoadingModal.tsx
+@@ -0,0 +1,48 @@
++'use client';
++
++import React from 'react';
++import { createPortal } from 'react-dom';
++import { Loader } from 'lucide-react';
++import { cn } from '@/utils/cn';
++
++interface ChatLoadingModalProps {
++  message?: string;
++  onClose: () => void;
++}
++
++export function ChatLoadingModal({ 
++  message = "Connecting to chat...", 
++  onClose 
++}: ChatLoadingModalProps) {
++  return createPortal(
++    <>
++      {/* Backdrop */}
++      <div 
++        className="fixed inset-0 bg-black/30 backdrop-blur-sm z-40 animate-in fade-in duration-200"
++        onClick={onClose}
++      />
++      
++      {/* Loading Modal */}
++      <div 
++        className={cn(
++          "fixed z-50 bg-background shadow-2xl border rounded-lg",
++          "top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2",
++          "w-80 p-8 text-center",
++          "animate-in fade-in zoom-in-95 duration-200"
++        )}
++        role="dialog"
++        aria-modal="true"
++        aria-label="Chat loading"
++      >
++        <div className="flex flex-col items-center space-y-4">
++          <Loader className="h-8 w-8 animate-spin text-primary" />
++          <div>
++            <h3 className="text-lg font-semibold mb-2">Setting up chat</h3>
++            <p className="text-sm text-muted-foreground">{message}</p>
++          </div>
++        </div>
++      </div>
++    </>,
++    document.body
++  );
++}
+\ No newline at end of file
+diff --git a/src/components/layout/MainLayoutWithSidebar.tsx b/src/components/layout/MainLayoutWithSidebar.tsx
+index 17a1b39..4e3b8f7 100644
+--- a/src/components/layout/MainLayoutWithSidebar.tsx
++++ b/src/components/layout/MainLayoutWithSidebar.tsx
+@@ -12,6 +12,7 @@ import { useEffectiveTheme } from '@/hooks/useEffectiveTheme';
+ import { authFetchJson } from '@/utils/authFetch';
+ import { ApiBoard } from '@/app/api/communities/[communityId]/boards/route';
+ import { ApiPost } from '@/app/api/posts/route';
++import { ApiChatChannel } from '@/types/chatChannels';
+ import { CommunityInfoResponsePayload } from '@curia_/cg-plugin-lib';
+ import { Sidebar } from './Sidebar';
+ import { Button } from '@/components/ui/button';
+@@ -168,6 +169,16 @@ export const MainLayoutWithSidebar: React.FC<MainLayoutWithSidebarProps> = ({ ch
+     enabled: !!boardsList && !!user && !!communityIdForBoards,
+   });
+ 
++  // Fetch chat channels for the community
++  const { data: chatChannelsList, isLoading: isLoadingChatChannels, error: chatChannelsError } = useQuery<ApiChatChannel[]>({
++    queryKey: ['chatChannels', communityIdForBoards],
++    queryFn: async () => {
++      if (!communityIdForBoards || !token) throw new Error('Community context or token not available for fetching chat channels');
++      return authFetchJson<ApiChatChannel[]>(`/api/communities/${communityIdForBoards}/chat-channels`, { token });
++    },
++    enabled: !!isAuthenticated && !!token && !!communityIdForBoards && !!communityInfo,
++  });
++
+   // Enhanced context detection for navigation and sidebar
+   const navigationContext = React.useMemo(() => {
+     // Post detail route detection
+@@ -303,7 +314,7 @@ export const MainLayoutWithSidebar: React.FC<MainLayoutWithSidebarProps> = ({ ch
+     }
+   };
+ 
+-  const showSidebar = isAuthenticated && communityInfo && accessibleBoardsList && !isLoadingCommunityInfo && !isLoadingBoards && !isFilteringBoards && !cgLibError && !communityInfoError && !boardsError;
++  const showSidebar = isAuthenticated && communityInfo && accessibleBoardsList && chatChannelsList && !isLoadingCommunityInfo && !isLoadingBoards && !isFilteringBoards && !isLoadingChatChannels && !cgLibError && !communityInfoError && !boardsError && !chatChannelsError;
+ 
+   // Handle mini mode (200x200px Common Ground minimized state)
+   if (isMiniMode) {
+@@ -365,11 +376,12 @@ export const MainLayoutWithSidebar: React.FC<MainLayoutWithSidebarProps> = ({ ch
+         )}
+ 
+         {/* Left Sidebar */}
+-        {showSidebar && communityInfo && accessibleBoardsList && (
++        {showSidebar && communityInfo && accessibleBoardsList && chatChannelsList && (
+           <div data-sidebar>
+             <Sidebar 
+               communityInfo={communityInfo} 
+               boardsList={accessibleBoardsList}
++              chatChannelsList={chatChannelsList}
+               isOpen={leftSidebarOpen}
+               isMobile={isMobile || isTablet}
+               onClose={() => setLeftSidebarOpen(false)}
+@@ -489,7 +501,7 @@ export const MainLayoutWithSidebar: React.FC<MainLayoutWithSidebarProps> = ({ ch
+           <div className="flex flex-1">
+             {/* Page content */}
+             <div className={cn(
+-              "flex-1 p-4 md:p-6 lg:p-8 transition-all duration-300",
++              "flex-1 transition-all duration-300",
+               // Add right padding/margin on large screens when sidebar is visible
+               showSidebar && !isMobile && !isTablet && rightSidebarOpen && "lg:pr-64 xl:pr-72",
+               showSidebar && !isMobile && !isTablet && "xl:pr-72" // Always account for sidebar on xl+
+diff --git a/src/components/layout/Sidebar.tsx b/src/components/layout/Sidebar.tsx
+index b7d82c5..d6567c7 100644
+--- a/src/components/layout/Sidebar.tsx
++++ b/src/components/layout/Sidebar.tsx
+@@ -3,9 +3,10 @@
+ import React, { useState, useEffect } from 'react';
+ import Link from 'next/link';
+ 
+-import { Home, LayoutDashboard, Settings, ChevronRight, ChevronDown, Plus, X, Lock, Shield, Handshake, Share2, BarChart3, Trophy } from 'lucide-react';
++import { Home, LayoutDashboard, Settings, ChevronRight, ChevronDown, Plus, X, Lock, Shield, Handshake, Share2, BarChart3, Trophy, MessageSquare } from 'lucide-react';
+ import { CommunityInfoResponsePayload } from '@curia_/cg-plugin-lib';
+ import { ApiBoard } from '@/app/api/communities/[communityId]/boards/route';
++import { ApiChatChannel } from '@/types/chatChannels';
+ import { cn } from '@/lib/utils';
+ import { useAuth } from '@/contexts/AuthContext';
+ import { useBackground } from '@/contexts/BackgroundContext';
+@@ -19,6 +20,7 @@ import { useEffectiveTheme } from '@/hooks/useEffectiveTheme';
+ interface SidebarProps {
+   communityInfo: CommunityInfoResponsePayload | null;
+   boardsList: ApiBoard[] | null;
++  chatChannelsList: ApiChatChannel[] | null;
+   isOpen?: boolean;
+   isMobile?: boolean;
+   onClose?: () => void;
+@@ -27,6 +29,7 @@ interface SidebarProps {
+ export const Sidebar: React.FC<SidebarProps> = ({ 
+   communityInfo, 
+   boardsList, 
++  chatChannelsList, 
+   isOpen = true, 
+   isMobile = false, 
+   onClose 
+@@ -75,12 +78,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
+   }
+ 
+   const currentBoardId = searchParams?.get('boardId');
++  const currentChatId = pathname?.includes('/chat/') ? pathname.split('/chat/')[1]?.split('?')[0] : null;
+   const isLocksPage = pathname === '/locks';
+   const isCreateBoardPage = pathname === '/create-board';
+   const isPartnershipsPage = pathname === '/partnerships';
+   const isAdminDashboardPage = pathname === '/admin-dashboard';
+   const isLeaderboardPage = pathname === '/leaderboard';
+-  const isHome = !currentBoardId && !isLocksPage && !isCreateBoardPage && !isPartnershipsPage && !isAdminDashboardPage && !isLeaderboardPage;
++  const isHome = !currentBoardId && !currentChatId && !isLocksPage && !isCreateBoardPage && !isPartnershipsPage && !isAdminDashboardPage && !isLeaderboardPage;
+ 
+   // Helper function to preserve existing URL params
+   const buildUrl = (path: string, additionalParams: Record<string, string> = {}) => {
+@@ -159,6 +163,27 @@ export const Sidebar: React.FC<SidebarProps> = ({
+     );
+   };
+ 
++  // Helper component for chat channel icon
++  const ChatIcon: React.FC<{ channel: ApiChatChannel; isActive: boolean }> = ({ channel, isActive }) => {
++    // Use lightning emoji for default channels (typically named after the community)
++    const isDefaultChannel = channel.is_default || channel.name === communityInfo?.title;
++    
++    return (
++      <div className={cn(
++        'p-1.5 rounded-lg transition-all duration-200 flex items-center justify-center',
++        isActive
++          ? 'bg-blue-500/10 text-blue-600 dark:bg-blue-500/20 dark:text-blue-300'
++          : 'bg-slate-200/50 text-slate-500 group-hover:bg-slate-300/50 group-hover:text-slate-700 dark:bg-slate-700/50 dark:text-slate-400 dark:group-hover:bg-slate-600/50 dark:group-hover:text-slate-300'
++      )}>
++        {isDefaultChannel ? (
++          <span className="text-[16px] leading-none">⚡</span>
++        ) : (
++          <MessageSquare size={16} />
++        )}
++      </div>
++    );
++  };
++
+   // Conditional styling: frosted glass when background is active, solid when not
+   const sidebarBg = cn(
+     'transition-all duration-300',
+@@ -346,6 +371,57 @@ export const Sidebar: React.FC<SidebarProps> = ({
+           )}
+         </Link>
+ 
++        {/* Chats Section */}
++        {chatChannelsList && chatChannelsList.length > 0 && (
++          <div className="pt-6 pb-2">
++            <h3 className={cn(
++              'px-3 text-xs font-semibold uppercase tracking-wider mb-3',
++              theme === 'dark' ? 'text-slate-400' : 'text-slate-500'
++            )}>
++              Chats
++            </h3>
++            <div className="space-y-1">
++              {chatChannelsList.map((channel) => {
++                const isActive = currentChatId === channel.id.toString();
++                return (
++                  <div key={channel.id} className="relative group">
++                    <Link
++                      href={buildUrl('/chat/' + channel.id.toString())}
++                      className={cn(
++                        'group flex items-center px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 relative overflow-hidden',
++                        isActive
++                          ? theme === 'dark'
++                            ? 'bg-gradient-to-r from-blue-500/20 to-cyan-500/20 text-blue-300 shadow-lg shadow-blue-500/10'
++                            : 'bg-gradient-to-r from-blue-500/10 to-cyan-500/10 text-blue-700 shadow-lg shadow-blue-500/10'
++                          : theme === 'dark'
++                            ? hasActiveBackground 
++                              ? 'text-slate-300 hover:text-slate-100 hover:bg-slate-800/30'
++                              : 'text-slate-300 hover:text-slate-100 hover:bg-slate-800/60'
++                            : hasActiveBackground
++                              ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/40'
++                              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/80'
++                      )}
++                    >
++                      <div className="mr-3">
++                        <ChatIcon channel={channel} isActive={isActive} />
++                      </div>
++                      <span className="flex-1 truncate pr-8">{channel.name}</span>
++                      {isActive && (
++                        <ChevronRight size={14} className="opacity-60" />
++                      )}
++                      
++                      {/* Active indicator */}
++                      {isActive && (
++                        <div className="absolute inset-0 bg-gradient-to-r from-blue-500/5 to-cyan-500/5 rounded-xl" />
++                      )}
++                    </Link>
++                  </div>
++                );
++              })}
++            </div>
++          </div>
++        )}
++
+         {/* Boards Section */}
+         {boardsList && boardsList.length > 0 && (
+           <div className="pt-6 pb-2">
+diff --git a/src/contexts/ChatSessionContext.tsx b/src/contexts/ChatSessionContext.tsx
+new file mode 100644
+index 0000000..a14813c
+--- /dev/null
++++ b/src/contexts/ChatSessionContext.tsx
+@@ -0,0 +1,39 @@
++'use client';
++
++import React, { createContext, useContext, ReactNode } from 'react';
++import { useChatSession } from '@/hooks/useChatSession';
++import type { ChatSessionData } from '@/hooks/useChatSession';
++
++interface ChatSessionContextType {
++  sessionData: ChatSessionData | null;
++  isInitialized: boolean;
++  isLoading: boolean;
++  initError: string | null;
++  retryCount: number;
++  isRetrying: boolean;
++  retryInitialization: () => void;
++}
++
++const ChatSessionContext = createContext<ChatSessionContextType | null>(null);
++
++interface ChatSessionProviderProps {
++  children: ReactNode;
++}
++
++export function ChatSessionProvider({ children }: ChatSessionProviderProps) {
++  const sessionState = useChatSession();
++
++  return (
++    <ChatSessionContext.Provider value={sessionState}>
++      {children}
++    </ChatSessionContext.Provider>
++  );
++}
++
++export function useChatSessionContext(): ChatSessionContextType {
++  const context = useContext(ChatSessionContext);
++  if (!context) {
++    throw new Error('useChatSessionContext must be used within a ChatSessionProvider');
++  }
++  return context;
++}
+\ No newline at end of file
+diff --git a/src/hooks/useChannelSelection.ts b/src/hooks/useChannelSelection.ts
+new file mode 100644
+index 0000000..f848e84
+--- /dev/null
++++ b/src/hooks/useChannelSelection.ts
+@@ -0,0 +1,69 @@
++/**
++ * Channel Selection Hook - Helper for opening specific chat channels
++ * 
++ * Provides convenient methods for opening chat channels by ID or opening
++ * the default channel. Works in conjunction with useChatSession.
++ */
++
++import { useCallback } from 'react';
++import { useChatModal } from '@curia_/curia-chat-modal';
++import { useChatSession } from './useChatSession';
++import type { ApiChatChannel } from '@/types/chatChannels';
++
++export interface UseChannelSelectionReturn {
++  // Open specific channel by ID
++  openChannelById: (channelId: number) => void;
++  // Open default channel
++  openDefaultChannel: () => void;
++  // Available channels for this community
++  availableChannels: ApiChatChannel[];
++  // The default channel
++  defaultChannel: ApiChatChannel | undefined;
++  // Whether session is ready for channel opening
++  isReady: boolean;
++}
++
++/**
++ * Helper hook for opening specific chat channels
++ * Integrates with useChatSession for data and useChatModal for UI state
++ */
++export function useChannelSelection(): UseChannelSelectionReturn {
++  const { openChat } = useChatModal();
++  const { sessionData, isInitialized } = useChatSession();
++
++  // Helper to open specific channel by ID
++  const openChannelById = useCallback((channelId: number) => {
++    if (!sessionData) {
++      console.warn('[Channel Selection] Session not ready, cannot open channel');
++      return;
++    }
++    
++    const channel = sessionData.channels.find(ch => ch.id === channelId);
++    if (!channel) {
++      console.warn(`[Channel Selection] Channel ${channelId} not found`);
++      return;
++    }
++
++    console.log(`[Channel Selection] Opening channel: ${channel.name}`);
++    openChat(channelId); // Pass channel ID to context
++  }, [sessionData, openChat]);
++
++  // Helper to open default channel
++  const openDefaultChannel = useCallback(() => {
++    if (!sessionData?.defaultChannel) {
++      console.warn('[Channel Selection] No default channel available');
++      return;
++    }
++
++    console.log(`[Channel Selection] Opening default channel: ${sessionData.defaultChannel.name}`);
++    openChat(); // No ID = default channel
++  }, [sessionData, openChat]);
++
++  return {
++    openChannelById,
++    openDefaultChannel,
++    availableChannels: sessionData?.channels || [],
++    defaultChannel: sessionData?.defaultChannel,
++    isReady: isInitialized && !!sessionData
++  };
++}
+\ No newline at end of file
+diff --git a/src/hooks/useChatSession.ts b/src/hooks/useChatSession.ts
+new file mode 100644
+index 0000000..ea54577
+--- /dev/null
++++ b/src/hooks/useChatSession.ts
+@@ -0,0 +1,174 @@
++/**
++ * Chat Session Hook - IRC Provisioning and Channel Management
++ * 
++ * This hook moves IRC provisioning and channel fetching from the chat modal
++ * to the Curia app for better architecture and performance.
++ * 
++ * Benefits:
++ * - Provisions IRC credentials once per session (not every modal open)
++ * - Caches channel data to avoid repeated API calls
++ * - Eliminates 2-3 second delay when opening chat modal
++ */
++
++import { useState, useEffect, useCallback } from 'react';
++import { useAuth } from '@/contexts/AuthContext';
++import { authFetchJson } from '@/utils/authFetch';
++import { provisionIrcUser, type IrcCredentials } from '@/utils/chat-api-client';
++import type { ApiChatChannel } from '@/types/chatChannels';
++import { toast } from 'sonner';
++
++export interface ChatSessionData {
++  ircCredentials: IrcCredentials;
++  channels: ApiChatChannel[];
++  defaultChannel: ApiChatChannel;
++}
++
++export interface UseChatSessionReturn {
++  sessionData: ChatSessionData | null;
++  isInitialized: boolean;
++  isLoading: boolean;
++  initError: string | null;
++  retryCount: number;
++  isRetrying: boolean;
++  // Helper to get channel by ID
++  getChannelById: (channelId: number) => ApiChatChannel | undefined;
++  // Manual retry function
++  retryInitialization: () => void;
++}
++
++/**
++ * Initialize chat session with IRC provisioning and channel fetching
++ * This runs once when the user is authenticated, not every modal open
++ */
++export function useChatSession(): UseChatSessionReturn {
++  const { user, token } = useAuth();
++  const [sessionData, setSessionData] = useState<ChatSessionData | null>(null);
++  const [isInitialized, setIsInitialized] = useState(false);
++  const [isLoading, setIsLoading] = useState(false);
++  const [initError, setInitError] = useState<string | null>(null);
++  const [retryCount, setRetryCount] = useState(0);
++  const [isRetrying, setIsRetrying] = useState(false);
++
++  // Retry logic with exponential backoff (3 attempts total)
++  const initializeSessionWithRetry = useCallback(async (attemptNumber = 1): Promise<void> => {
++    try {
++      setIsLoading(attemptNumber === 1);
++      setIsRetrying(attemptNumber > 1);
++      setRetryCount(attemptNumber);
++      setInitError(null);
++      
++      console.log(`[Chat Session] Starting session initialization (attempt ${attemptNumber}/3)...`);
++      
++      // 1. Provision IRC credentials (moved from chat modal!)
++      console.log('[Chat Session] Provisioning IRC user...');
++      const ircCredentials = await provisionIrcUser(
++        token!,
++        process.env.NEXT_PUBLIC_CHAT_BASE_URL || '',
++        process.env.NEXT_PUBLIC_CURIA_BASE_URL || ''
++      );
++      
++      console.log('[Chat Session] IRC provisioning complete, fetching channels...');
++      
++      // 2. Fetch available channels for community
++      const channels = await authFetchJson<ApiChatChannel[]>(
++        `/api/communities/${user!.cid}/chat-channels`,
++        { token }
++      );
++      
++      console.log(`[Chat Session] Fetched ${channels.length} channels`);
++      
++      // 3. Identify default channel
++      const defaultChannel = channels.find(ch => ch.is_default) || channels[0];
++      
++      if (!defaultChannel) {
++        throw new Error('No chat channels available for community');
++      }
++
++      console.log('[Chat Session] Default channel:', defaultChannel.name);
++
++      const newSessionData: ChatSessionData = {
++        ircCredentials,
++        channels,
++        defaultChannel
++      };
++
++      setSessionData(newSessionData);
++      setIsInitialized(true);
++      
++      console.log('[Chat Session] Session initialization complete!');
++      
++      // Success toast notification
++      toast.success("Chat connected! 💬");
++      
++    } catch (error) {
++      const errorMessage = error instanceof Error ? error.message : 'Failed to initialize chat session';
++      console.error(`[Chat Session] Attempt ${attemptNumber} failed:`, errorMessage);
++      
++      if (attemptNumber < 3) {
++        // Retry with exponential backoff: 1s, 2s delays
++        const delay = Math.pow(2, attemptNumber - 1) * 1000;
++        console.log(`[Chat Session] Retrying in ${delay}ms...`);
++        
++        setTimeout(() => {
++          initializeSessionWithRetry(attemptNumber + 1);
++        }, delay);
++      } else {
++        // Final failure after 3 attempts
++        console.error('[Chat Session] All retry attempts failed');
++        setInitError(errorMessage);
++        setIsInitialized(false);
++        
++        // Error toast notification
++        toast.error("Chat connection failed. Please refresh the page to retry.", {
++          duration: 10000, // Show longer for important errors
++        });
++      }
++    } finally {
++      setIsLoading(false);
++      setIsRetrying(false);
++    }
++  }, [user?.cid, token]);
++
++  // Initialize session on mount - with retry logic!
++  useEffect(() => {
++    if (!user || !token || !user.cid) {
++      setIsInitialized(false);
++      setSessionData(null);
++      setRetryCount(0);
++      setInitError(null);
++      return;
++    }
++    
++    initializeSessionWithRetry(1);
++  }, [user?.userId, user?.cid, user, token, initializeSessionWithRetry]);
++
++  // Helper function to get channel by ID
++  const getChannelById = (channelId: number): ApiChatChannel | undefined => {
++    return sessionData?.channels.find(ch => ch.id === channelId);
++  };
++
++  // Manual retry function - resets state and starts over
++  const retryInitialization = useCallback(() => {
++    console.log('[Chat Session] Manual retry initiated');
++    setRetryCount(0);
++    setInitError(null);
++    setIsRetrying(false);
++    setIsInitialized(false);
++    setSessionData(null);
++    
++    if (user && token && user.cid) {
++      initializeSessionWithRetry(1);
++    }
++  }, [user, token, initializeSessionWithRetry]);
++
++  return {
++    sessionData,
++    isInitialized,
++    isLoading,
++    initError,
++    retryCount,
++    isRetrying,
++    getChannelById,
++    retryInitialization
++  };
++}
+\ No newline at end of file
+diff --git a/src/lib/SojuAdminService.ts b/src/lib/SojuAdminService.ts
+new file mode 100644
+index 0000000..5f75b58
+--- /dev/null
++++ b/src/lib/SojuAdminService.ts
+@@ -0,0 +1,338 @@
++/**
++ * SojuAdminService - HTTP client for Soju IRC bouncer admin operations
++ * 
++ * This service communicates with the curia-irc-bouncer-sidecar HTTP API
++ * which handles all the complex sojuctl command execution and parsing.
++ * 
++ * Environment Variables:
++ * - SOJU_SIDECAR_URL: URL of the sidecar service (default: http://localhost:3001)
++ * - SOJU_ADMIN_API_TOKEN: Authentication token for sidecar API
++ */
++
++// Type definitions for admin operations
++export interface CreateUserParams {
++  ircUsername: string;
++  ircPassword: string;
++  nickname: string;
++  realname: string;
++}
++
++export interface CreateNetworkParams {
++  ircUsername: string;
++  nickname: string;
++}
++
++export interface SojuAdminResponse {
++  success: boolean;
++  output?: string;
++  error?: string;
++}
++
++/**
++ * HTTP client for Soju admin operations via sidecar service
++ */
++export class SojuAdminService {
++  private readonly sidecarUrl: string;
++  private readonly apiToken: string;
++  private readonly timeout: number = 30000; // 30 seconds
++
++  constructor() {
++    this.sidecarUrl = process.env.SOJU_SIDECAR_URL || 'http://localhost:3003';
++    this.apiToken = process.env.SOJU_ADMIN_API_TOKEN || '';
++    
++    if (!this.apiToken) {
++      console.warn('[SojuAdmin] SOJU_ADMIN_API_TOKEN not configured - sidecar calls will fail');
++    }
++    
++    console.log('[SojuAdmin] Initialized HTTP client:', {
++      sidecarUrl: this.sidecarUrl,
++      hasToken: !!this.apiToken
++    });
++  }
++
++  /**
++   * Create a new IRC user via sidecar API
++   */
++  async createUser(params: CreateUserParams): Promise<SojuAdminResponse> {
++    console.log('[SojuAdmin] Creating IRC user via sidecar:', {
++      ircUsername: params.ircUsername,
++      nickname: params.nickname,
++      timestamp: new Date().toISOString()
++    });
++
++    try {
++      const response = await this.makeRequest('POST', '/api/users', {
++        ircUsername: params.ircUsername,
++        ircPassword: params.ircPassword,
++        nickname: params.nickname,
++        realname: params.realname
++      });
++
++      console.log('[SojuAdmin] User creation successful:', {
++        ircUsername: params.ircUsername,
++        output: response.output?.substring(0, 100)
++      });
++
++      return response;
++      
++    } catch (error) {
++      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
++      console.error('[SojuAdmin] Failed to create user:', {
++        ircUsername: params.ircUsername,
++        error: errorMessage
++      });
++      
++      return {
++        success: false,
++        error: errorMessage
++      };
++    }
++  }
++
++  /**
++   * Create a network connection for an IRC user via sidecar API
++   */
++  async createNetwork(params: CreateNetworkParams): Promise<SojuAdminResponse> {
++    console.log('[SojuAdmin] Creating IRC network via sidecar:', {
++      ircUsername: params.ircUsername,
++      timestamp: new Date().toISOString()
++    });
++
++    try {
++      const response = await this.makeRequest('POST', '/api/networks', {
++        ircUsername: params.ircUsername,
++        nickname: params.nickname
++      });
++
++      console.log('[SojuAdmin] Network creation successful:', {
++        ircUsername: params.ircUsername,
++        output: response.output?.substring(0, 100)
++      });
++
++      return response;
++      
++    } catch (error) {
++      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
++      console.error('[SojuAdmin] Failed to create network:', {
++        ircUsername: params.ircUsername,
++        error: errorMessage
++      });
++      
++      return {
++        success: false,
++        error: errorMessage
++      };
++    }
++  }
++
++  /**
++   * Update an existing user's password via sidecar API
++   */
++  async updateUserPassword(ircUsername: string, ircPassword: string): Promise<SojuAdminResponse> {
++    console.log('[SojuAdmin] Updating user password via sidecar:', {
++      ircUsername,
++      timestamp: new Date().toISOString()
++    });
++
++    try {
++      const response = await this.makeRequest('PUT', `/api/users/${encodeURIComponent(ircUsername)}`, {
++        ircPassword
++      });
++
++      console.log('[SojuAdmin] Password update successful:', {
++        ircUsername,
++        output: response.output?.substring(0, 100)
++      });
++
++      return response;
++      
++    } catch (error) {
++      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
++      console.error('[SojuAdmin] Failed to update password:', {
++        ircUsername,
++        error: errorMessage
++      });
++      
++      return {
++        success: false,
++        error: errorMessage
++      };
++    }
++  }
++
++  /**
++   * Provision user (create new or update existing) via sidecar API
++   * This is the main method used by the IRC provisioning endpoint
++   */
++  async provisionUser(params: CreateUserParams): Promise<SojuAdminResponse> {
++    console.log('[SojuAdmin] Provisioning IRC user via sidecar:', {
++      ircUsername: params.ircUsername,
++      nickname: params.nickname,
++      timestamp: new Date().toISOString()
++    });
++
++    try {
++      // Try to create user first
++      const userResult = await this.createUser(params);
++      
++      if (!userResult.success) {
++        // Check if it failed because user already exists
++        if (userResult.error && userResult.error.includes('already exists')) {
++          console.log('[SojuAdmin] User exists, updating password via sidecar:', params.ircUsername);
++          
++          // Update password instead
++          const passwordResult = await this.updateUserPassword(params.ircUsername, params.ircPassword);
++          if (!passwordResult.success) {
++            throw new Error(`Failed to update password via sidecar: ${passwordResult.error}`);
++          }
++          
++          // Continue to network creation for existing users too
++          console.log('[SojuAdmin] Password updated, now ensuring network exists for existing user:', params.ircUsername);
++        } else {
++          // Real error - rethrow
++          throw new Error(userResult.error || 'Unknown user creation error from sidecar');
++        }
++      }
++
++      // Now create/ensure network exists (for both new and existing users)
++      const networkResult = await this.createNetwork({
++        ircUsername: params.ircUsername,
++        nickname: params.nickname
++      });
++
++      if (!networkResult.success) {
++        console.warn('[SojuAdmin] Network creation failed via sidecar:', {
++          ircUsername: params.ircUsername,
++          networkError: networkResult.error
++        });
++        // Don't fail the whole operation for network creation
++      }
++
++      // Determine success message based on whether user was new or existing
++      const wasExistingUser = userResult && !userResult.success && userResult.error && userResult.error.includes('already exists');
++      const message = wasExistingUser 
++        ? `Updated existing user ${params.ircUsername} and ensured network via sidecar`
++        : `Created new user ${params.ircUsername} with network via sidecar`;
++
++      return {
++        success: true,
++        output: message
++      };
++
++    } catch (error) {
++      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
++      console.error('[SojuAdmin] Failed to provision user via sidecar:', {
++        ircUsername: params.ircUsername,
++        error: errorMessage
++      });
++      
++      return {
++        success: false,
++        error: errorMessage
++      };
++    }
++  }
++
++  /**
++   * Test sidecar connectivity
++   */
++  async testConnection(): Promise<SojuAdminResponse> {
++    console.log('[SojuAdmin] Testing sidecar connection...');
++    
++    try {
++      const response = await this.makeRequest('GET', '/api/test');
++      
++      console.log('[SojuAdmin] Sidecar connection test successful:', {
++        output: response.output?.substring(0, 100)
++      });
++      
++      return response;
++      
++    } catch (error) {
++      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
++      console.error('[SojuAdmin] Sidecar connection test failed:', errorMessage);
++      
++      return {
++        success: false,
++        error: `Sidecar connection test failed: ${errorMessage}`
++      };
++    }
++  }
++
++  /**
++   * Make HTTP request to sidecar API
++   */
++  private async makeRequest(method: string, path: string, body?: any): Promise<SojuAdminResponse> {
++    const url = `${this.sidecarUrl}${path}`;
++    
++    const options: RequestInit = {
++      method,
++      headers: {
++        'Content-Type': 'application/json',
++        // eslint-disable-next-line no-restricted-syntax -- Service-to-service communication with sidecar API token
++        'Authorization': `Bearer ${this.apiToken}`
++      },
++      signal: AbortSignal.timeout(this.timeout)
++    };
++
++    if (body && (method === 'POST' || method === 'PUT')) {
++      options.body = JSON.stringify(body);
++    }
++
++    console.log('[SojuAdmin] Making sidecar request:', {
++      method,
++      url,
++      hasBody: !!body,
++      timestamp: new Date().toISOString()
++    });
++
++    try {
++      const response = await fetch(url, options);
++      
++      if (!response.ok) {
++        let errorData: any;
++        try {
++          errorData = await response.json();
++        } catch {
++          errorData = { error: `HTTP ${response.status}: ${response.statusText}` };
++        }
++        
++        // Include details field to preserve "already exists" error messages
++        const errorMessage = errorData.error || errorData.message || `HTTP ${response.status}`;
++        const fullError = errorData.details ? `${errorMessage}: ${errorData.details}` : errorMessage;
++        throw new Error(fullError);
++      }
++
++      const result = await response.json();
++      
++      // Normalize sidecar response to our format
++      return {
++        success: result.success !== false, // Default to true unless explicitly false
++        output: result.output || result.message,
++        error: result.error
++      };
++      
++    } catch (error) {
++      if (error instanceof Error && error.name === 'AbortError') {
++        throw new Error(`Sidecar request timeout after ${this.timeout}ms`);
++      }
++      
++      throw error;
++    }
++  }
++
++  /**
++   * Get configuration summary for debugging
++   */
++  getConfig() {
++    return {
++      sidecarUrl: this.sidecarUrl,
++      hasApiToken: !!this.apiToken,
++      timeout: this.timeout,
++      environment: process.env.NODE_ENV || 'development'
++    };
++  }
++}
++
++// Export singleton instance
++export const sojuAdminService = new SojuAdminService();
+\ No newline at end of file
+diff --git a/src/lib/chatChannelPermissions.ts b/src/lib/chatChannelPermissions.ts
+new file mode 100644
+index 0000000..5478db5
+--- /dev/null
++++ b/src/lib/chatChannelPermissions.ts
+@@ -0,0 +1,169 @@
++import { ChatChannelSettings, ApiChatChannel, ChatChannelRow } from '../types/chatChannels';
++import { query } from './db';
++
++/**
++ * Determines if a user can access a specific chat channel based on their roles and admin status
++ * @param userRoles - Array of role IDs that the user has
++ * @param channelSettings - Channel settings object containing permissions
++ * @param isAdmin - Whether the user has admin privileges
++ * @returns boolean indicating if user can access the channel
++ */
++export function canUserAccessChatChannel(
++  userRoles: string[] | undefined, 
++  channelSettings: ChatChannelSettings | Record<string, unknown>, 
++  isAdmin: boolean = false
++): boolean {
++  // Admins can access everything
++  if (isAdmin) {
++    return true;
++  }
++  
++  // Type guard to check if settings has the expected structure
++  const permissions = channelSettings && typeof channelSettings === 'object' && 'permissions' in channelSettings
++    ? (channelSettings as ChatChannelSettings).permissions
++    : undefined;
++  
++  // If no permission restrictions exist, channel is public to all community members
++  if (!permissions?.allowedRoles || 
++      !Array.isArray(permissions.allowedRoles) ||
++      permissions.allowedRoles.length === 0) {
++    return true;
++  }
++  
++  // If user has no roles, they can't access gated channels
++  if (!userRoles || userRoles.length === 0) {
++    return false;
++  }
++  
++  // Check if user has any of the required roles for this channel
++  const allowedRoles = permissions.allowedRoles;
++  return userRoles.some(userRole => allowedRoles.includes(userRole));
++}
++
++/**
++ * Filters an array of chat channels to only include those the user can access
++ * @param channels - Array of channel objects with settings
++ * @param userRoles - Array of role IDs that the user has
++ * @param isAdmin - Whether the user has admin privileges
++ * @returns Filtered array of accessible channels
++ */
++export function filterAccessibleChatChannels<T extends { settings: ChatChannelSettings | Record<string, unknown> }>(
++  channels: T[], 
++  userRoles: string[] | undefined, 
++  isAdmin: boolean = false
++): T[] {
++  return channels.filter(channel => 
++    canUserAccessChatChannel(userRoles, channel.settings, isAdmin)
++  );
++}
++
++/**
++ * Gets accessible chat channel IDs for use in SQL queries
++ * @param channels - Array of channel objects with id and settings
++ * @param userRoles - Array of role IDs that the user has  
++ * @param isAdmin - Whether the user has admin privileges
++ * @returns Array of channel IDs that the user can access
++ */
++export function getAccessibleChatChannelIds(
++  channels: Array<{ id: number; settings: ChatChannelSettings | Record<string, unknown> }>, 
++  userRoles: string[] | undefined, 
++  isAdmin: boolean = false
++): number[] {
++  return channels
++    .filter(channel => canUserAccessChatChannel(userRoles, channel.settings, isAdmin))
++    .map(channel => channel.id);
++}
++
++/**
++ * Resolves a chat channel by ID and community, checking if it exists and belongs to the community
++ * @param channelId - The channel ID to resolve
++ * @param communityId - The community ID to check against
++ * @returns The channel data if found and belongs to community, null otherwise
++ */
++export async function resolveChannel(channelId: number, communityId: string): Promise<ApiChatChannel | null> {
++  try {
++    const result = await query(`
++      SELECT id, community_id, name, description, irc_channel_name,
++             is_single_mode, is_default, settings, created_at, updated_at
++      FROM chat_channels 
++      WHERE id = $1 AND community_id = $2
++    `, [channelId, communityId]);
++
++    if (result.rows.length === 0) {
++      return null;
++    }
++
++    const row = result.rows[0] as ChatChannelRow;
++    return transformChannelRow(row);
++  } catch (error) {
++    console.error(`[chatChannelPermissions] Error resolving channel ${channelId}:`, error);
++    return null;
++  }
++}
++
++/**
++ * Transforms a database row into an ApiChatChannel object
++ * @param row - Raw database row from chat_channels table
++ * @returns Transformed ApiChatChannel object
++ */
++export function transformChannelRow(row: ChatChannelRow): ApiChatChannel {
++  return {
++    id: row.id,
++    community_id: row.community_id,
++    name: row.name,
++    description: row.description,
++    irc_channel_name: row.irc_channel_name,
++    is_single_mode: row.is_single_mode,
++    is_default: row.is_default,
++    settings: typeof row.settings === 'string' ? JSON.parse(row.settings) : row.settings,
++    created_at: row.created_at,
++    updated_at: row.updated_at,
++  };
++}
++
++/**
++ * Auto-generates an IRC channel name from a display name
++ * @param displayName - The human-readable channel name
++ * @returns URL-safe IRC channel name
++ */
++export function generateIrcChannelName(displayName: string): string {
++  return displayName
++    .toLowerCase()
++    .replace(/[^a-z0-9\s-]/g, '') // Remove special characters
++    .replace(/\s+/g, '-') // Replace spaces with hyphens
++    .replace(/-+/g, '-') // Replace multiple hyphens with single
++    .replace(/^-|-$/g, '') // Remove leading/trailing hyphens
++    .substring(0, 50); // Limit length
++}
++
++/**
++ * Checks if an IRC channel name is unique within a community
++ * @param ircChannelName - The IRC channel name to check
++ * @param communityId - The community to check within
++ * @param excludeChannelId - Optional channel ID to exclude from check (for updates)
++ * @returns Promise<boolean> indicating if the name is unique
++ */
++export async function isIrcChannelNameUnique(
++  ircChannelName: string, 
++  communityId: string, 
++  excludeChannelId?: number
++): Promise<boolean> {
++  try {
++    let queryText = `
++      SELECT id FROM chat_channels 
++      WHERE community_id = $1 AND LOWER(irc_channel_name) = LOWER($2)
++    `;
++    const params: (string | number)[] = [communityId, ircChannelName];
++
++    if (excludeChannelId) {
++      queryText += ' AND id != $3';
++      params.push(excludeChannelId);
++    }
++
++    const result = await query(queryText, params);
++    return result.rows.length === 0;
++  } catch (error) {
++    console.error('[chatChannelPermissions] Error checking IRC channel name uniqueness:', error);
++    return false;
++  }
++}
+\ No newline at end of file
+diff --git a/src/lib/queries/chatChannels.ts b/src/lib/queries/chatChannels.ts
+new file mode 100644
+index 0000000..d7d1ca6
+--- /dev/null
++++ b/src/lib/queries/chatChannels.ts
+@@ -0,0 +1,268 @@
++import { query } from '../db';
++import { ApiChatChannel, CreateChatChannelRequest, UpdateChatChannelRequest, ChatChannelRow } from '../../types/chatChannels';
++import { transformChannelRow, generateIrcChannelName, isIrcChannelNameUnique } from '../chatChannelPermissions';
++
++/**
++ * Centralized database query utilities for chat channels
++ * Mirrors the pattern used in enrichedPosts.ts for consistency
++ */
++export class ChatChannelQueries {
++  /**
++   * Get all chat channels for a community, ordered by default first, then by name
++   * @param communityId - The community ID
++   * @returns Promise<ApiChatChannel[]> array of channels
++   */
++  static async getChannelsByCommunity(communityId: string): Promise<ApiChatChannel[]> {
++    const result = await query(`
++      SELECT id, community_id, name, description, irc_channel_name,
++             is_single_mode, is_default, settings, created_at, updated_at
++      FROM chat_channels 
++      WHERE community_id = $1
++      ORDER BY is_default DESC, name ASC
++    `, [communityId]);
++    
++    return result.rows.map((row: ChatChannelRow) => transformChannelRow(row));
++  }
++
++  /**
++   * Get a single chat channel by ID and community
++   * @param channelId - The channel ID
++   * @param communityId - The community ID
++   * @returns Promise<ApiChatChannel | null> the channel or null if not found
++   */
++  static async getChannelById(channelId: number, communityId: string): Promise<ApiChatChannel | null> {
++    const result = await query(`
++      SELECT id, community_id, name, description, irc_channel_name,
++             is_single_mode, is_default, settings, created_at, updated_at
++      FROM chat_channels 
++      WHERE id = $1 AND community_id = $2
++    `, [channelId, communityId]);
++
++    if (result.rows.length === 0) {
++      return null;
++    }
++
++    return transformChannelRow(result.rows[0] as ChatChannelRow);
++  }
++
++  /**
++   * Create a new chat channel
++   * @param data - Channel creation data including community_id
++   * @returns Promise<ApiChatChannel> the created channel
++   */
++  static async createChannel(data: CreateChatChannelRequest & { community_id: string }): Promise<ApiChatChannel> {
++    const {
++      community_id,
++      name,
++      description = null,
++      irc_channel_name,
++      is_single_mode = true,
++      is_default = false,
++      settings = {}
++    } = data;
++
++    // Auto-generate IRC channel name if not provided
++    let finalIrcChannelName = irc_channel_name || generateIrcChannelName(name);
++    
++    // Ensure IRC channel name is unique by appending numbers if needed
++    let counter = 1;
++    const baseIrcChannelName = finalIrcChannelName;
++    while (!(await isIrcChannelNameUnique(finalIrcChannelName, community_id))) {
++      finalIrcChannelName = `${baseIrcChannelName}-${counter}`;
++      counter++;
++    }
++
++    const result = await query(`
++      INSERT INTO chat_channels (
++        community_id, name, description, irc_channel_name, 
++        is_single_mode, is_default, settings
++      ) VALUES ($1, $2, $3, $4, $5, $6, $7) 
++      RETURNING *
++    `, [
++      community_id,
++      name.trim(),
++      description?.trim() || null,
++      finalIrcChannelName,
++      is_single_mode,
++      is_default,
++      JSON.stringify(settings)
++    ]);
++
++    return transformChannelRow(result.rows[0] as ChatChannelRow);
++  }
++
++  /**
++   * Update an existing chat channel
++   * @param channelId - The channel ID to update
++   * @param communityId - The community ID (for security)
++   * @param data - Update data
++   * @returns Promise<ApiChatChannel | null> the updated channel or null if not found
++   */
++  static async updateChannel(
++    channelId: number, 
++    communityId: string, 
++    data: UpdateChatChannelRequest
++  ): Promise<ApiChatChannel | null> {
++    const {
++      name,
++      description,
++      irc_channel_name,
++      is_single_mode,
++      is_default,
++      settings
++    } = data;
++
++    // If IRC channel name is being updated, ensure uniqueness
++    if (irc_channel_name && !(await isIrcChannelNameUnique(irc_channel_name, communityId, channelId))) {
++      throw new Error('IRC channel name already exists in this community');
++    }
++
++    // Build dynamic update query
++    const updateFields: string[] = [];
++    const values: (string | number | boolean | null)[] = [];
++    let paramCounter = 1;
++
++    if (name !== undefined) {
++      updateFields.push(`name = $${paramCounter++}`);
++      values.push(name.trim());
++    }
++    if (description !== undefined) {
++      updateFields.push(`description = $${paramCounter++}`);
++      values.push(description?.trim() || null);
++    }
++    if (irc_channel_name !== undefined) {
++      updateFields.push(`irc_channel_name = $${paramCounter++}`);
++      values.push(irc_channel_name);
++    }
++    if (is_single_mode !== undefined) {
++      updateFields.push(`is_single_mode = $${paramCounter++}`);
++      values.push(is_single_mode);
++    }
++    if (is_default !== undefined) {
++      updateFields.push(`is_default = $${paramCounter++}`);
++      values.push(is_default);
++    }
++    if (settings !== undefined) {
++      updateFields.push(`settings = $${paramCounter++}`);
++      values.push(JSON.stringify(settings));
++    }
++
++    // Always update the updated_at timestamp
++    updateFields.push('updated_at = NOW()');
++
++    // Add WHERE clause parameters
++    values.push(channelId, communityId);
++
++    const queryText = `
++      UPDATE chat_channels 
++      SET ${updateFields.join(', ')}
++      WHERE id = $${paramCounter++} AND community_id = $${paramCounter++}
++      RETURNING *
++    `;
++
++    const result = await query(queryText, values);
++
++    if (result.rows.length === 0) {
++      return null;
++    }
++
++    return transformChannelRow(result.rows[0] as ChatChannelRow);
++  }
++
++  /**
++   * Delete a chat channel
++   * @param channelId - The channel ID to delete
++   * @param communityId - The community ID (for security)
++   * @returns Promise<boolean> true if deleted, false if not found
++   */
++  static async deleteChannel(channelId: number, communityId: string): Promise<boolean> {
++    const result = await query(`
++      DELETE FROM chat_channels 
++      WHERE id = $1 AND community_id = $2
++      RETURNING name
++    `, [channelId, communityId]);
++
++    return result.rows.length > 0;
++  }
++
++  /**
++   * Check if a channel name is unique within a community
++   * @param name - The channel name to check
++   * @param communityId - The community ID
++   * @param excludeChannelId - Optional channel ID to exclude from check
++   * @returns Promise<boolean> true if unique, false if duplicate
++   */
++  static async isChannelNameUnique(
++    name: string, 
++    communityId: string, 
++    excludeChannelId?: number
++  ): Promise<boolean> {
++    let queryText = `
++      SELECT id FROM chat_channels 
++      WHERE community_id = $1 AND LOWER(name) = LOWER($2)
++    `;
++    const params: (string | number)[] = [communityId, name];
++
++    if (excludeChannelId) {
++      queryText += ' AND id != $3';
++      params.push(excludeChannelId);
++    }
++
++    const result = await query(queryText, params);
++    return result.rows.length === 0;
++  }
++
++  /**
++   * Get the default channel for a community
++   * @param communityId - The community ID
++   * @returns Promise<ApiChatChannel | null> the default channel or null if none
++   */
++  static async getDefaultChannel(communityId: string): Promise<ApiChatChannel | null> {
++    const result = await query(`
++      SELECT id, community_id, name, description, irc_channel_name,
++             is_single_mode, is_default, settings, created_at, updated_at
++      FROM chat_channels 
++      WHERE community_id = $1 AND is_default = true
++      LIMIT 1
++    `, [communityId]);
++
++    if (result.rows.length === 0) {
++      return null;
++    }
++
++    return transformChannelRow(result.rows[0] as ChatChannelRow);
++  }
++
++  /**
++   * Create a default "general" channel for a new community
++   * @param communityId - The community ID
++   * @returns Promise<ApiChatChannel> the created default channel
++   */
++  static async createDefaultChannel(communityId: string): Promise<ApiChatChannel> {
++    return this.createChannel({
++      community_id: communityId,
++      name: 'General',
++      description: 'General discussion channel',
++      irc_channel_name: 'general',
++      is_single_mode: true,
++      is_default: true,
++      settings: {
++        permissions: {
++          // No role restrictions - public to all community members
++        },
++        irc: {
++          autoconnect: true,
++          lockchannel: true,
++          nofocus: true,
++          welcomeMessage: 'Welcome to the general chat!'
++        },
++        ui: {
++          defaultTheme: 'auto',
++          allowThemeSwitch: true,
++          showUserList: true,
++          allowMentions: true
++        }
++      }
++    });
++  }
++}
+\ No newline at end of file
+diff --git a/src/lib/socket.ts b/src/lib/socket.ts
+index 75cd087..e5d4bc6 100644
+--- a/src/lib/socket.ts
++++ b/src/lib/socket.ts
+@@ -75,5 +75,45 @@ export const socketEvents = {
+     } else {
+       console.error('[Socket.IO broadcastBoardSettingsChanged via Emitter] FAILED: customEventEmitter not available.');
+     }
++  },
++
++  // Chat Channel Events
++  broadcastNewChatChannel: (communityId: string, channelData: Record<string, unknown>) => {
++    const emitter = getProcessEventEmitter();
++    if (emitter) {
++      emitter.emit('broadcastEvent', {
++        room: `community:${communityId}`,
++        eventName: 'newChatChannel',
++        payload: channelData
++      });
++    } else {
++      console.error('[Socket.IO broadcastNewChatChannel via Emitter] FAILED: customEventEmitter not available.');
++    }
++  },
++
++  broadcastChatChannelUpdated: (communityId: string, channelId: number, channelData: Record<string, unknown>) => {
++    const emitter = getProcessEventEmitter();
++    if (emitter) {
++      emitter.emit('broadcastEvent', {
++        room: `community:${communityId}`,
++        eventName: 'chatChannelUpdated',
++        payload: { channelId, ...channelData }
++      });
++    } else {
++      console.error('[Socket.IO broadcastChatChannelUpdated via Emitter] FAILED: customEventEmitter not available.');
++    }
++  },
++
++  broadcastChatChannelDeleted: (communityId: string, channelId: number, channelName: string) => {
++    const emitter = getProcessEventEmitter();
++    if (emitter) {
++      emitter.emit('broadcastEvent', {
++        room: `community:${communityId}`,
++        eventName: 'chatChannelDeleted',
++        payload: { channelId, channelName }
++      });
++    } else {
++      console.error('[Socket.IO broadcastChatChannelDeleted via Emitter] FAILED: customEventEmitter not available.');
++    }
+   }
+ }; 
+\ No newline at end of file
+diff --git a/src/types/chatChannels.ts b/src/types/chatChannels.ts
+new file mode 100644
+index 0000000..21d4eb6
+--- /dev/null
++++ b/src/types/chatChannels.ts
+@@ -0,0 +1,79 @@
++import { BoardSettings } from './settings';
++
++/**
++ * Chat channel settings extending board settings with IRC-specific options
++ */
++export interface ChatChannelSettings extends Omit<BoardSettings, 'ai'> {
++  irc?: {
++    autoconnect?: boolean;
++    lockchannel?: boolean;
++    nofocus?: boolean;
++    welcomeMessage?: string;
++    topic?: string;
++  };
++  ui?: {
++    defaultTheme?: 'auto' | 'light' | 'dark';
++    allowThemeSwitch?: boolean;
++    showUserList?: boolean;
++    allowMentions?: boolean;
++  };
++}
++
++/**
++ * API response interface for chat channels (mirrors ApiBoard structure)
++ */
++export interface ApiChatChannel {
++  id: number;
++  community_id: string;
++  name: string;
++  description: string | null;
++  irc_channel_name: string;
++  is_single_mode: boolean;
++  is_default: boolean;
++  settings: ChatChannelSettings;
++  created_at: string;
++  updated_at: string;
++  // Computed fields:
++  user_can_access?: boolean;  // Based on current user's roles (after community access)
++  user_can_join?: boolean;    // Future: differentiate read vs join access
++}
++
++/**
++ * Request interface for creating new chat channels
++ */
++export interface CreateChatChannelRequest {
++  name: string;
++  description?: string;
++  irc_channel_name?: string; // Auto-generated if not provided
++  is_single_mode?: boolean;
++  is_default?: boolean;
++  settings?: ChatChannelSettings;
++}
++
++/**
++ * Request interface for updating existing chat channels
++ */
++export interface UpdateChatChannelRequest {
++  name?: string;
++  description?: string;
++  irc_channel_name?: string;
++  is_single_mode?: boolean;
++  is_default?: boolean;
++  settings?: ChatChannelSettings;
++}
++
++/**
++ * Database row interface for chat_channels table
++ */
++export interface ChatChannelRow {
++  id: number;
++  community_id: string;
++  name: string;
++  description: string | null;
++  irc_channel_name: string;
++  is_single_mode: boolean;
++  is_default: boolean;
++  settings: string | Record<string, unknown>; // JSON or parsed object
++  created_at: string;
++  updated_at: string;
++}
+\ No newline at end of file
+diff --git a/src/utils/chat-api-client.ts b/src/utils/chat-api-client.ts
+new file mode 100644
+index 0000000..7b8d66f
+--- /dev/null
++++ b/src/utils/chat-api-client.ts
+@@ -0,0 +1,52 @@
++/**
++ * Chat API client for IRC user provisioning and channel management
++ * Moved from curia-chat-modal package to curia app for better architecture
++ */
++
++import { authFetchJson } from './authFetch';
++
++export interface IrcCredentials {
++  success: boolean;
++  ircUsername: string;
++  ircPassword: string;
++  networkName: string;
++}
++
++/**
++ * Call the IRC user provisioning endpoint to get credentials for The Lounge
++ * This endpoint validates JWT, creates/updates Soju IRC user, and returns login credentials
++ * MOVED FROM: curia-chat-modal package to improve architecture
++ */
++export async function provisionIrcUser(
++  authToken: string,
++  chatBaseUrl?: string,
++  curiaBaseUrl?: string
++): Promise<IrcCredentials> {
++  // Use curiaBaseUrl for API calls, fallback to relative path for same-origin
++  const endpoint = curiaBaseUrl ? `${curiaBaseUrl}/api/irc-user-provision` : '/api/irc-user-provision';
++  
++  try {
++    console.log('[Chat Session] Starting IRC user provisioning...');
++    
++    const credentials = await authFetchJson<IrcCredentials>(endpoint, {
++      method: 'POST',
++      token: authToken,
++    });
++
++    console.log('[Chat Session] IRC provisioning successful');
++    
++    if (!credentials.success) {
++      throw new Error('IRC provisioning failed: Invalid response format');
++    }
++
++    return credentials;
++  } catch (error) {
++    console.error('[Chat Session] IRC provisioning error:', error instanceof Error ? error.message : error);
++    
++    // Re-throw with more context for better error handling
++    if (error instanceof Error) {
++      throw new Error(`IRC provisioning failed: ${error.message}`);
++    }
++    throw new Error('IRC provisioning failed: Unknown error');
++  }
++}
+\ No newline at end of file
+diff --git a/src/utils/cn.ts b/src/utils/cn.ts
+new file mode 100644
+index 0000000..d34cf7e
+--- /dev/null
++++ b/src/utils/cn.ts
+@@ -0,0 +1,6 @@
++import { type ClassValue, clsx } from 'clsx';
++import { twMerge } from 'tailwind-merge';
++
++export function cn(...inputs: ClassValue[]) {
++  return twMerge(clsx(inputs));
++}
+\ No newline at end of file
+diff --git a/yarn.lock b/yarn.lock
+index 31db3f2..79469de 100644
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -244,11 +244,12 @@
+   resolved "https://registry.npmjs.org/@curia_/cg-plugin-lib/-/cg-plugin-lib-1.0.8.tgz#8e676b5465a58ed7ff00b3b70275e04d8b71ed6f"
+   integrity sha512-G2a0HZS63r9mJCKN9zZxRoP60XNOj0z8XTjqqHWOODd0rGJEK43J1frZzKnkJnAXya1fsW2N9nLCXaY+VIjZfw==
+ 
+-"@curia_/curia-chat-modal@^1.0.0":
+-  version "1.0.0"
+-  resolved "https://registry.npmjs.org/@curia_/curia-chat-modal/-/curia-chat-modal-1.0.0.tgz#f66000717a6f9be1a79a50c02a148213b079c03e"
+-  integrity sha512-0R2qtRNrmZhmFJGuMnW4W+zuPLRlL9kCyQCQ8l28Fj9CsXZ3N4fcAUaZ4k8SUWB6SJB/+YtEkW5R5VwQJ1RETQ==
++"@curia_/curia-chat-modal@^4.0.0":
++  version "4.0.0"
++  resolved "https://registry.npmjs.org/@curia_/curia-chat-modal/-/curia-chat-modal-4.0.0.tgz#23504482c13c6293e607bbf0c7263daae357bb88"
++  integrity sha512-n9hPeC5or6RQXgBCgIjddFLy03Bkk1alTKHtFjyQWJ2htd+Z5fToi/GFPV8NblYHBmQxUKZEDI1b42E1rY5c6A==
+   dependencies:
++    bcryptjs "^3.0.2"
+     class-variance-authority "^0.7.1"
+     clsx "^2.1.1"
+     lucide-react "^0.453.0"
+@@ -4452,6 +4453,11 @@ bcrypt-pbkdf@^1.0.0:
+   dependencies:
+     tweetnacl "^0.14.3"
+ 
++bcryptjs@^3.0.2:
++  version "3.0.2"
++  resolved "https://registry.npmjs.org/bcryptjs/-/bcryptjs-3.0.2.tgz#caadcca1afefe372ed6e20f86db8e8546361c1ca"
++  integrity sha512-k38b3XOZKv60C4E2hVsXTolJWfkGRMbILBIe2IBITXciy5bOsTKot5kDrf3ZfufQtQOUN5mXceUEpU1rTl9Uog==
++
+ bech32@1.1.4:
+   version "1.1.4"
+   resolved "https://registry.npmjs.org/bech32/-/bech32-1.1.4.tgz#e38c9f37bf179b8eb16ae3a772b40c356d4832e9"

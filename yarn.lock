@@ -228,6 +228,17 @@
   dependencies:
     "@jridgewell/trace-mapping" "0.3.9"
 
+"@curia_/curia-chat-modal@^4.0.0":
+  version "4.0.0"
+  resolved "https://registry.npmjs.org/@curia_/curia-chat-modal/-/curia-chat-modal-4.0.0.tgz#23504482c13c6293e607bbf0c7263daae357bb88"
+  integrity sha512-n9hPeC5or6RQXgBCgIjddFLy03Bkk1alTKHtFjyQWJ2htd+Z5fToi/GFPV8NblYHBmQxUKZEDI1b42E1rY5c6A==
+  dependencies:
+    bcryptjs "^3.0.2"
+    class-variance-authority "^0.7.1"
+    clsx "^2.1.1"
+    lucide-react "^0.453.0"
+    tailwind-merge "^2.5.4"
+
 "@ecies/ciphers@^0.2.3":
   version "0.2.4"
   resolved "https://registry.npmjs.org/@ecies/ciphers/-/ciphers-0.2.4.tgz"
@@ -4363,6 +4374,11 @@ bcrypt-pbkdf@^1.0.0:
   dependencies:
     tweetnacl "^0.14.3"
 
+bcryptjs@^3.0.2:
+  version "3.0.2"
+  resolved "https://registry.npmjs.org/bcryptjs/-/bcryptjs-3.0.2.tgz#caadcca1afefe372ed6e20f86db8e8546361c1ca"
+  integrity sha512-k38b3XOZKv60C4E2hVsXTolJWfkGRMbILBIe2IBITXciy5bOsTKot5kDrf3ZfufQtQOUN5mXceUEpU1rTl9Uog==
+
 bech32@1.1.4:
   version "1.1.4"
   resolved "https://registry.npmjs.org/bech32/-/bech32-1.1.4.tgz"
@@ -7988,6 +8004,11 @@ ltgt@~2.2.0:
   resolved "https://registry.npmjs.org/ltgt/-/ltgt-2.2.1.tgz"
   integrity sha512-AI2r85+4MquTw9ZYqabu4nMwy9Oftlfa/e/52t9IjtfG+mGBbTNdAoZ3RQKLHR6r0wQnwZnPIEh/Ya6XTWAKNA==
 
+lucide-react@^0.453.0:
+  version "0.453.0"
+  resolved "https://registry.npmjs.org/lucide-react/-/lucide-react-0.453.0.tgz#d37909a45a29d89680383a202ee861224b05ba6a"
+  integrity sha512-kL+RGZCcJi9BvJtzg2kshO192Ddy9hv3ij+cPrVPWSRzgCWCVazoQJxOjAwgK53NomL07HB7GPHW120FimjNhQ==
+
 lucide-react@^0.511.0:
   version "0.511.0"
   resolved "https://registry.npmjs.org/lucide-react/-/lucide-react-0.511.0.tgz"
@@ -10354,6 +10375,11 @@ swr@^2.2.5:
   dependencies:
     dequal "^2.0.3"
     use-sync-external-store "^1.4.0"
+
+tailwind-merge@^2.5.4:
+  version "2.6.0"
+  resolved "https://registry.npmjs.org/tailwind-merge/-/tailwind-merge-2.6.0.tgz#ac5fb7e227910c038d458f396b7400d93a3142d5"
+  integrity sha512-P+Vu1qXfzediirmHOC3xKGAYeZtPcV9g76X+xg2FD4tYgR71ewMA35Y3sCz3zhiN/dwefRpJX0yBcgwi1fXNQA==
 
 tailwind-merge@^3.3.0:
   version "3.3.1"
