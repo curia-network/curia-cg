@@ -475,27 +475,17 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
                 let displayAmount: string;
                 
                 if (tokenReq.tokenType === 'LSP7') {
-                  // Smart decimal detection: if minAmount is small (like 1-100) but would display as tiny decimals,
-                  // it's likely a non-divisible token where minAmount was stored as the human-readable amount
-                  const rawMinAmount = ethers.BigNumber.from(tokenReq.minAmount || '0');
-                  const minAmountNumber = parseFloat(tokenReq.minAmount || '0');
+                  // Use decimals from the saved requirement first, then fallback to other sources
+                  const actualDecimals = (tokenReq as any).decimals ?? tokenData?.decimals ?? 18;
                   
-                  // Check if this looks like a non-divisible token scenario
-                  const looksLikeNonDivisible = minAmountNumber > 0 && minAmountNumber <= 1000 && rawMinAmount.lt(ethers.BigNumber.from('1000'));
+                  // Format using the proper decimals
+                  displayAmount = ethers.utils.formatUnits(tokenReq.minAmount || '0', actualDecimals);
                   
-                  if (looksLikeNonDivisible) {
-                    // Display the raw amount as-is (it's likely already human-readable)
-                    displayAmount = tokenReq.minAmount || '0';
-                    console.log(`[RichRequirementsDisplay] 🔧 Detected non-divisible LSP7 ${tokenReq.contractAddress}: displaying ${displayAmount} directly`);
-                  } else {
-                    // Use proper decimal formatting for divisible tokens
-                    const actualDecimals = tokenData?.decimals || 18;
-                    displayAmount = ethers.utils.formatUnits(tokenReq.minAmount || '0', actualDecimals);
-                    
-                    // Clean up unnecessary decimals
-                    if (parseFloat(displayAmount) === Math.floor(parseFloat(displayAmount))) {
-                      displayAmount = Math.floor(parseFloat(displayAmount)).toString();
-                    }
+                  console.log(`[RichRequirementsDisplay] 🔧 Formatting LSP7 ${tokenReq.contractAddress}: minAmount=${tokenReq.minAmount}, decimals=${actualDecimals}, displayAmount=${displayAmount}`);
+                  
+                  // Clean up unnecessary decimals for whole numbers
+                  if (parseFloat(displayAmount) === Math.floor(parseFloat(displayAmount))) {
+                    displayAmount = Math.floor(parseFloat(displayAmount)).toString();
                   }
                 } else {
                   // LSP8 tokens - always whole numbers

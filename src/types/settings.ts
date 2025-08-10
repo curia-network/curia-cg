@@ -93,6 +93,7 @@ export interface TokenRequirement {
   tokenId?: string; // Specific token ID (for LSP8 NFTs)
   name?: string; // Human-readable token name for UI
   symbol?: string; // Token symbol for UI
+  decimals?: number; // Token decimals for proper formatting (LSP7 only)
 }
 
 /**

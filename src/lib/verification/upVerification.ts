@@ -132,23 +132,26 @@ export async function verifyLSP7Balance(
     const balance = ethers.BigNumber.from(balanceHex);
     const minBalance = ethers.BigNumber.from(requirement.minAmount);
 
-    if (balance.lt(minBalance)) {
-      // Format balance for user-friendly error message
-      const balanceFormatted = ethers.utils.formatUnits(balance, 18); // LSP7 typically uses 18 decimals
-      const minBalanceFormatted = ethers.utils.formatUnits(minBalance, 18);
-      
-      return {
-        valid: false,
-        error: `Insufficient ${requirement.symbol || requirement.name} balance. Required: ${minBalanceFormatted}, Current: ${balanceFormatted}`,
-        balance: balance.toString()
-      };
-    }
-
-    console.log(`[verifyLSP7Balance] Token balance check passed: ${ethers.utils.formatUnits(balance, 18)} >= ${ethers.utils.formatUnits(minBalance, 18)}`);
-    return { 
-      valid: true,
+      if (balance.lt(minBalance)) {
+    // Use actual token decimals for formatting, fallback to 18 if not provided
+    const tokenDecimals = requirement.decimals ?? 18;
+    const balanceFormatted = ethers.utils.formatUnits(balance, tokenDecimals);
+    const minBalanceFormatted = ethers.utils.formatUnits(minBalance, tokenDecimals);
+    
+    return {
+      valid: false,
+      error: `Insufficient ${requirement.symbol || requirement.name} balance. Required: ${minBalanceFormatted}, Current: ${balanceFormatted}`,
       balance: balance.toString()
     };
+  }
+
+  // Use actual token decimals for logging, fallback to 18 if not provided
+  const tokenDecimals = requirement.decimals ?? 18;
+  console.log(`[verifyLSP7Balance] Token balance check passed: ${ethers.utils.formatUnits(balance, tokenDecimals)} >= ${ethers.utils.formatUnits(minBalance, tokenDecimals)}`);
+  return { 
+    valid: true,
+    balance: balance.toString()
+  };
 
   } catch (error) {
     console.error(`[verifyLSP7Balance] Failed to verify LSP7 token ${requirement.contractAddress}:`, error);

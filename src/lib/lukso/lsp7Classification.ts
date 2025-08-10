@@ -15,9 +15,10 @@ import { lukso, luksoTestnet } from 'viem/chains';
 import { ERC725, type ERC725JSONSchema } from '@erc725/erc725.js';
 import LSP4Schema from '@erc725/erc725.js/schemas/LSP4DigitalAsset.json';
 
-// Note: Using fallback approach for interface IDs since we can't import from @lukso/lsp7-contracts yet
-// TODO: Update to use official imports once package is properly configured
-const INTERFACE_ID_LSP7 = '0xda1f85e4'; // LSP7DigitalAsset interface ID
+// LSP7 interface IDs - supporting both old and new versions due to March 2024 update
+// See: https://medium.com/lukso/important-changes-to-lsp7-lsp8-token-standards-a1e2627d0b0e
+const INTERFACE_ID_LSP7_OLD = '0xb3c4928f'; // Pre-March 2024 LSP7 interface ID
+const INTERFACE_ID_LSP7_NEW = '0xc52d6008'; // Post-March 2024 LSP7 interface ID
 
 // Minimal ABI for LSP7 detection and decimals reading
 const LSP7_MINIMAL_ABI = [
@@ -77,11 +78,21 @@ export async function classifyLsp7({
       client,
     });
 
-    const isLsp7 = await contract.read.supportsInterface([INTERFACE_ID_LSP7 as `0x${string}`])
-      .catch((error) => {
-        console.log(`[LSP7 Classification] ERC-165 check failed for ${asset}:`, error.message);
-        return false;
-      });
+    // Check for both old and new LSP7 interface IDs to support tokens from different deployment periods
+    const [isLsp7New, isLsp7Old] = await Promise.all([
+      contract.read.supportsInterface([INTERFACE_ID_LSP7_NEW as `0x${string}`])
+        .catch(() => false),
+      contract.read.supportsInterface([INTERFACE_ID_LSP7_OLD as `0x${string}`])
+        .catch(() => false)
+    ]);
+
+    const isLsp7 = isLsp7New || isLsp7Old;
+    
+    if (isLsp7New) {
+      console.log(`[LSP7 Classification] ✅ ${asset} supports new LSP7 interface (${INTERFACE_ID_LSP7_NEW})`);
+    } else if (isLsp7Old) {
+      console.log(`[LSP7 Classification] ✅ ${asset} supports old LSP7 interface (${INTERFACE_ID_LSP7_OLD})`);
+    }
 
     if (!isLsp7) {
       console.log(`[LSP7 Classification] ${asset} is not LSP7`);

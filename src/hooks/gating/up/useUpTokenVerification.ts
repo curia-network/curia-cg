@@ -118,9 +118,9 @@ export const useUpTokenVerification = (
             const requiredAmount = ethers.BigNumber.from(req.minAmount || '1');
             const isMet = balance ? balance.gte(requiredAmount) : false;
             
-            // Use enhanced metadata for better formatting
-            const displayDecimals = metadata?.displayDecimals ?? metadata?.decimals ?? 18;
-            const actualDecimals = metadata?.actualDecimals ?? metadata?.decimals ?? 18;
+            // Use decimals from the requirement first (saved during lock creation), then metadata, then fallback
+            const actualDecimals = req.decimals ?? metadata?.actualDecimals ?? metadata?.decimals ?? 18;
+            const displayDecimals = req.decimals ?? metadata?.displayDecimals ?? actualDecimals;
             
             newStatus[req.contractAddress] = {
               isMet,
@@ -131,7 +131,7 @@ export const useUpTokenVerification = (
                 decimals: actualDecimals, // Keep actual decimals for backward compatibility
                 iconUrl: metadata.iconUrl,
                 displayDecimals: displayDecimals, // Use proper display decimals
-                isDivisible: metadata.isDivisible ?? true, // Default to divisible if unknown
+                isDivisible: req.decimals === 0 ? false : (metadata.isDivisible ?? (actualDecimals > 0)), // Use req.decimals to determine divisibility
                 tokenType: metadata.tokenType || 'LSP7',
                 classification: metadata.classification || 'UNKNOWN'
               } : undefined,

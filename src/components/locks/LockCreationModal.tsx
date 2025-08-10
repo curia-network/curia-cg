@@ -325,7 +325,8 @@ const PreviewStep = () => {
               symbol: req.config.symbol || 'UNK',
               minAmount: req.config.minAmount,
               tokenType: 'LSP7',
-              contractAddress: req.config.contractAddress
+              contractAddress: req.config.contractAddress,
+              decimals: req.config.decimals // Include decimals for proper verification
             });
             break;
           case 'lsp8_nft':
@@ -744,7 +745,8 @@ const LockCreationModalContent: React.FC<LockCreationModalContentProps> = ({
                 symbol: req.config.symbol || 'UNK',
                 minAmount: req.config.minAmount,
                 tokenType: 'LSP7',
-                contractAddress: req.config.contractAddress
+                contractAddress: req.config.contractAddress,
+                decimals: req.config.decimals // Include decimals for proper verification
               });
               break;
             case 'lsp8_nft':

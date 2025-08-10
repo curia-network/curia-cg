@@ -188,6 +188,7 @@ export interface TokenRequirement {
   symbol?: string;
   minAmount?: string; // For LSP7 or LSP8 collection count
   tokenId?: string;   // For specific LSP8 NFT
+  decimals?: number;  // Token decimals for proper formatting (LSP7 only)
 }
 
 export interface FollowerRequirement {
