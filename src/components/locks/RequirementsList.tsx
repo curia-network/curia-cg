@@ -1,13 +1,16 @@
 'use client';
 
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Trash2, Edit3, Plus, ChevronDown, ChevronRight } from 'lucide-react';
+import { Plus, ChevronDown, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 import { GatingRequirement, RequirementCategory } from '@/types/locks';
 import { useLockBuilder } from './LockBuilderProvider';
+import { RequirementCard } from './RequirementCard';
+import { useUPTokenMetadata } from '@/hooks/useUPTokenMetadata';
+import { useUPSocialProfiles } from '@/hooks/useUPSocialProfiles';
 
 // Category metadata for grouping and display
 const CATEGORY_INFO = {
@@ -28,32 +31,7 @@ const CATEGORY_INFO = {
   }
 } as const;
 
-// Helper function to format requirement display names
-const formatRequirementDisplay = (requirement: GatingRequirement): string => {
-  if (requirement.displayName) {
-    return requirement.displayName;
-  }
-  
-  // Fallback formatting based on type with proper type guards
-  switch (requirement.type) {
-    case 'lyx_balance':
-      const lyxConfig = requirement.config as any; // eslint-disable-line @typescript-eslint/no-explicit-any
-      return `LYX Balance: ≥ ${parseInt(lyxConfig.minAmount || '0') / 1e18} LYX`;
-    case 'eth_balance':
-      const ethConfig = requirement.config as any; // eslint-disable-line @typescript-eslint/no-explicit-any
-      return `ETH Balance: ≥ ${parseInt(ethConfig.minAmount || '0') / 1e18} ETH`;
-    case 'up_follower_count':
-      const upConfig = requirement.config as any; // eslint-disable-line @typescript-eslint/no-explicit-any
-      return `UP Followers: ≥ ${upConfig.minCount || 0} followers`;
-    case 'efp_follower_count':
-      const efpConfig = requirement.config as any; // eslint-disable-line @typescript-eslint/no-explicit-any
-      return `EFP Followers: ≥ ${efpConfig.minCount || 0} followers`;
-    case 'ens_domain':
-      return 'ENS Domain Required';
-    default:
-      return `${requirement.type.replace(/_/g, ' ')}`;
-  }
-};
+
 
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface RequirementsListProps {
@@ -64,6 +42,25 @@ export const RequirementsList: React.FC<RequirementsListProps> = () => {
   const { state, removeRequirement, updateFulfillmentMode, updateEcosystemFulfillment, navigateToRequirementPicker, navigateToRequirementConfig } = useLockBuilder();
   const { requirements, fulfillmentMode, ecosystemFulfillment } = state;
   const [isAdvancedExpanded, setIsAdvancedExpanded] = React.useState(false);
+
+  // Extract addresses for metadata fetching (reusing RichRequirementsDisplay approach)
+  const tokenAddresses = useMemo(() => {
+    return requirements
+      .filter(req => req.type === 'lsp7_token' || req.type === 'lsp8_nft')
+      .map(req => (req.config as any).contractAddress) // eslint-disable-line @typescript-eslint/no-explicit-any
+      .filter(Boolean); // Remove any undefined addresses
+  }, [requirements]);
+
+  const profileAddresses = useMemo(() => {
+    return requirements
+      .filter(req => req.type === 'up_must_follow' || req.type === 'up_must_be_followed_by')
+      .map(req => (req.config as any).address) // eslint-disable-line @typescript-eslint/no-explicit-any
+      .filter(Boolean); // Remove any undefined addresses
+  }, [requirements]);
+
+  // Fetch metadata using existing hooks (same as RichRequirementsDisplay)
+  const { data: tokenMetadata = {}, isLoading: isLoadingTokens } = useUPTokenMetadata(tokenAddresses);
+  const { data: socialProfiles = {}, isLoading: isLoadingProfiles } = useUPSocialProfiles(profileAddresses);
 
   // Helper function to determine which ecosystem a requirement belongs to
   const getRequirementEcosystem = (requirementType: string): 'universal_profile' | 'ethereum_profile' => {
@@ -314,45 +311,28 @@ export const RequirementsList: React.FC<RequirementsListProps> = () => {
               </div>
 
               {/* Category Requirements */}
-              <div className="space-y-2 pl-6">
-                {categoryRequirements.map((requirement) => (
-                  <div
-                    key={requirement.id}
-                    className="flex items-center justify-between p-3 rounded-lg border bg-card hover:bg-muted/50 transition-colors"
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center space-x-2">
-                        <span className="font-medium text-sm truncate">
-                          {formatRequirementDisplay(requirement)}
-                        </span>
-                        {!requirement.isValid && (
-                          <Badge variant="destructive" className="text-xs">
-                            Invalid
-                          </Badge>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="flex items-center space-x-2">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleEditRequirement(requirement.id)}
-                        className="h-8 w-8 p-0"
-                      >
-                        <Edit3 className="h-3 w-3" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleRemoveRequirement(requirement.id)}
-                        className="h-8 w-8 p-0 text-destructive hover:text-destructive"
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
-                    </div>
-                  </div>
-                ))}
+              <div className="space-y-3 pl-6">
+                {categoryRequirements.map((requirement) => {
+                  // Get metadata for this specific requirement
+                  const config = requirement.config as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+                  const contractAddress = config.contractAddress?.toLowerCase();
+                  const profileAddress = config.address?.toLowerCase();
+                  
+                  const relevantTokenMetadata = contractAddress ? tokenMetadata[contractAddress] : undefined;
+                  const relevantSocialProfile = profileAddress ? socialProfiles[profileAddress] : undefined;
+                  
+                  return (
+                    <RequirementCard
+                      key={requirement.id}
+                      requirement={requirement}
+                      tokenMetadata={relevantTokenMetadata}
+                      socialProfile={relevantSocialProfile}
+                      isLoading={isLoadingTokens || isLoadingProfiles}
+                      onEdit={() => handleEditRequirement(requirement.id)}
+                      onDelete={() => handleRemoveRequirement(requirement.id)}
+                    />
+                  );
+                })}
               </div>
             </div>
           );

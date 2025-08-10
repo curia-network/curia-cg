@@ -37,6 +37,258 @@ import { UniversalProfileProvider } from '@/contexts/UniversalProfileContext';
 import { useLockManagement } from '@/hooks/useLockManagement';
 import { RequirementsStep } from './LockCreationModal';
 
+// Helper function to convert gatingConfig back to requirements for editing
+const convertGatingConfigToRequirements = (gatingConfig: any): any[] => { // eslint-disable-line @typescript-eslint/no-explicit-any
+  const requirements: any[] = []; // eslint-disable-line @typescript-eslint/no-explicit-any
+  
+  // For now, return a simple conversion that focuses on the most common cases
+  // This can be expanded later to handle all requirement types
+  if (gatingConfig.categories) {
+    gatingConfig.categories.forEach((category: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+      if (!category.enabled || !category.requirements) return;
+      
+      if (category.type === 'universal_profile') {
+        const upReqs = category.requirements;
+        let reqId = 1;
+        
+        // LYX Balance
+        if (upReqs.minLyxBalance) {
+          requirements.push({
+            id: `lyx_${reqId++}`,
+            type: 'lyx_balance',
+            category: 'token',
+            config: { minAmount: upReqs.minLyxBalance },
+            isValid: true,
+            displayName: `LYX Balance: ${upReqs.minLyxBalance} LYX`
+          });
+        }
+        
+        // Tokens
+        if (upReqs.requiredTokens && upReqs.requiredTokens.length > 0) {
+          upReqs.requiredTokens.forEach((token: any, index: number) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+            requirements.push({
+              id: `token_${index}`,
+              type: token.tokenType === 'LSP7' ? 'lsp7_token' : 'lsp8_nft',
+              category: 'token',
+              config: {
+                contractAddress: token.contractAddress,
+                minAmount: token.minAmount,
+                name: token.name,
+                symbol: token.symbol,
+                decimals: token.decimals,
+                tokenId: token.tokenId
+              },
+              isValid: true,
+              displayName: `${token.tokenType} Token: ${token.name || token.symbol || 'Unknown'}`
+            });
+          });
+        }
+        
+        // Follower requirements
+        if (upReqs.followerRequirements && upReqs.followerRequirements.length > 0) {
+          upReqs.followerRequirements.forEach((followerReq: any, index: number) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+            let type = 'up_follower_count';
+            let config: any = {}; // eslint-disable-line @typescript-eslint/no-explicit-any
+            let displayName = 'Social Requirement';
+            
+            if (followerReq.type === 'minimum_followers') {
+              type = 'up_follower_count';
+              config = { minCount: parseInt(followerReq.value, 10) };
+              displayName = `Minimum ${followerReq.value} followers`;
+            } else if (followerReq.type === 'following') {
+              type = 'up_must_follow';
+              config = { address: followerReq.value, profileName: followerReq.description };
+              displayName = `Must follow: ${followerReq.description || followerReq.value}`;
+            } else if (followerReq.type === 'followed_by') {
+              type = 'up_must_be_followed_by';
+              config = { address: followerReq.value, profileName: followerReq.description };
+              displayName = `Must be followed by: ${followerReq.description || followerReq.value}`;
+            }
+            
+            requirements.push({
+              id: `follower_${index}`,
+              type,
+              category: 'social',
+              config,
+              isValid: true,
+              displayName
+            });
+          });
+        }
+      }
+      
+      // TODO: Add ethereum_profile handling when needed
+    });
+  }
+  
+  return requirements;
+};
+
+// Helper function to convert builder state back to gating config (for preview and save)
+const convertBuilderStateToGatingConfig = (state: LockBuilderState) => {
+  const upRequirements: any = { // eslint-disable-line @typescript-eslint/no-explicit-any
+    minLyxBalance: undefined,
+    requiredTokens: [],
+    followerRequirements: []
+  };
+  
+  const ethRequirements: any = { // eslint-disable-line @typescript-eslint/no-explicit-any
+    requiresENS: false,
+    ensDomainPatterns: [],
+    minimumETHBalance: undefined,
+    requiredERC20Tokens: [],
+    requiredERC721Collections: [],
+    requiredERC1155Tokens: [],
+    efpRequirements: []
+  };
+
+  // Convert each requirement to the proper format
+  state.requirements.forEach((req: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    switch (req.type) {
+      // UP (LUKSO) requirements
+      case 'lyx_balance':
+        upRequirements.minLyxBalance = req.config.minAmount;
+        break;
+      case 'lsp7_token':
+        upRequirements.requiredTokens.push({
+          name: req.config.name || 'Unknown Token',
+          symbol: req.config.symbol || 'UNK',
+          minAmount: req.config.minAmount,
+          tokenType: 'LSP7',
+          contractAddress: req.config.contractAddress,
+          decimals: req.config.decimals
+        });
+        break;
+      case 'lsp8_nft':
+        upRequirements.requiredTokens.push({
+          name: req.config.name || 'Unknown Token',
+          symbol: req.config.symbol || 'UNK',
+          minAmount: req.config.minAmount || '1',
+          tokenType: 'LSP8',
+          contractAddress: req.config.contractAddress,
+          tokenId: req.config.tokenId
+        });
+        break;
+      case 'up_follower_count':
+        upRequirements.followerRequirements.push({
+          type: 'minimum_followers',
+          value: req.config.minCount.toString()
+        });
+        break;
+      case 'up_must_follow':
+        upRequirements.followerRequirements.push({
+          type: 'following',
+          value: req.config.address,
+          description: req.config.profileName || req.config.username
+        });
+        break;
+      case 'up_must_be_followed_by':
+        upRequirements.followerRequirements.push({
+          type: 'followed_by',
+          value: req.config.address,
+          description: req.config.profileName || req.config.username
+        });
+        break;
+
+      // Ethereum requirements
+      case 'eth_balance':
+        ethRequirements.minimumETHBalance = req.config.minAmount;
+        break;
+      case 'erc20_token':
+        ethRequirements.requiredERC20Tokens.push({
+          contractAddress: req.config.contractAddress,
+          minimum: req.config.minAmount,
+          name: req.config.name,
+          symbol: req.config.symbol,
+          decimals: req.config.decimals
+        });
+        break;
+      case 'erc721_nft':
+        ethRequirements.requiredERC721Collections.push({
+          contractAddress: req.config.contractAddress,
+          minimumCount: req.config.minCount || 1,
+          name: req.config.name,
+          symbol: req.config.symbol
+        });
+        break;
+      case 'erc1155_token':
+        ethRequirements.requiredERC1155Tokens.push({
+          contractAddress: req.config.contractAddress,
+          tokenId: req.config.tokenId,
+          minimum: req.config.minAmount,
+          name: req.config.name
+        });
+        break;
+      case 'ens_domain':
+        ethRequirements.requiresENS = req.config.requiresENS;
+        break;
+      case 'ens_pattern':
+        ethRequirements.ensDomainPatterns = req.config.patterns || [];
+        break;
+      case 'efp_follower_count':
+        ethRequirements.efpRequirements.push({
+          type: 'minimum_followers',
+          value: req.config.minCount.toString()
+        });
+        break;
+      case 'efp_must_follow':
+        ethRequirements.efpRequirements.push({
+          type: 'must_follow',
+          value: req.config.address,
+          description: req.config.ensName || req.config.displayName
+        });
+        break;
+      case 'efp_must_be_followed_by':
+        ethRequirements.efpRequirements.push({
+          type: 'must_be_followed_by',
+          value: req.config.address,
+          description: req.config.ensName || req.config.displayName
+        });
+        break;
+    }
+  });
+
+  // Build categories array - only include categories that have requirements
+  const categories = [];
+  
+  // Check if UP category has any requirements
+  const hasUPRequirements = upRequirements.minLyxBalance || 
+                            upRequirements.requiredTokens.length > 0 || 
+                            upRequirements.followerRequirements.length > 0;
+  
+  if (hasUPRequirements) {
+    categories.push({
+      type: 'universal_profile',
+      enabled: true,
+      fulfillment: state.ecosystemFulfillment.universal_profile,
+      requirements: upRequirements
+    });
+  }
+
+  // Check if Ethereum category has any requirements
+  const hasEthRequirements = ethRequirements.requiresENS ||
+                            ethRequirements.ensDomainPatterns.length > 0 ||
+                            ethRequirements.minimumETHBalance ||
+                            ethRequirements.requiredERC20Tokens.length > 0 ||
+                            ethRequirements.requiredERC721Collections.length > 0 ||
+                            ethRequirements.requiredERC1155Tokens.length > 0 ||
+                            ethRequirements.efpRequirements.length > 0;
+  
+  if (hasEthRequirements) {
+    categories.push({
+      type: 'ethereum_profile',
+      enabled: true,
+      fulfillment: state.ecosystemFulfillment.ethereum_profile,
+      requirements: ethRequirements
+    });
+  }
+
+  return {
+    categories,
+    requireAll: state.fulfillmentMode === 'all'
+  };
+};
+
 // Step content components (reusing from creation modal)
 const MetadataStep = () => {
   const { state, setState } = useLockBuilder();
@@ -168,28 +420,34 @@ const LockEditModalContent: React.FC<LockEditModalContentProps> = ({
     if (lock) {
       console.log('[LockEditModal] Initializing with lock data:', lock);
       
-      // Convert gatingConfig back to builder state format
-      const initialState: LockBuilderState = {
-        step: 'metadata' as LockBuilderStep,
-        selectedTemplate: null,
-        metadata: {
-          name: lock.name,
-          description: lock.description || '',
-          icon: lock.icon || '🔒',
-          color: lock.color || '#3b82f6',
-          tags: lock.tags || [],
-          isPublic: lock.isPublic || false
-        },
-        requirements: [], // TODO: Convert gatingConfig.categories back to requirements format
-        fulfillmentMode: lock.gatingConfig.requireAll ? 'all' : 'any',
-        ecosystemFulfillment: {
-          universal_profile: 'any',
-          ethereum_profile: 'any'
-        },
-        validation: { isValid: true, errors: [], warnings: [] },
-        previewMode: false,
-        currentScreen: 'requirements'
-      };
+                // Convert gatingConfig back to builder state format
+          const convertedRequirements = convertGatingConfigToRequirements(lock.gatingConfig);
+          
+          // Determine ecosystem fulfillment modes from the gating config
+          const upCategory = lock.gatingConfig.categories?.find((cat: any) => cat.type === 'universal_profile'); // eslint-disable-line @typescript-eslint/no-explicit-any
+          const ethCategory = lock.gatingConfig.categories?.find((cat: any) => cat.type === 'ethereum_profile'); // eslint-disable-line @typescript-eslint/no-explicit-any
+          
+          const initialState: LockBuilderState = {
+            step: 'metadata' as LockBuilderStep,
+            selectedTemplate: null,
+            metadata: {
+              name: lock.name,
+              description: lock.description || '',
+              icon: lock.icon || '🔒',
+              color: lock.color || '#3b82f6',
+              tags: lock.tags || [],
+              isPublic: lock.isPublic || false
+            },
+            requirements: convertedRequirements,
+            fulfillmentMode: lock.gatingConfig.requireAll ? 'all' : 'any',
+            ecosystemFulfillment: {
+              universal_profile: upCategory?.fulfillment || 'any',
+              ethereum_profile: ethCategory?.fulfillment || 'any'
+            },
+            validation: { isValid: true, errors: [], warnings: [] },
+            previewMode: false,
+            currentScreen: 'requirements'
+          };
       
       setState(initialState);
       setCurrentStepIndex(0); // Start with metadata step for editing
@@ -228,15 +486,12 @@ const LockEditModalContent: React.FC<LockEditModalContentProps> = ({
             </p>
           </div>
           
-          <UniversalProfileProvider>
-            <GatingRequirementsPreview 
-              gatingConfig={{
-                categories: [], // TODO: Convert from builder state
-                requireAll: state.fulfillmentMode === 'all'
-              }}
-              className="border-0 shadow-none bg-background"
-            />
-          </UniversalProfileProvider>
+                          <UniversalProfileProvider>
+                  <GatingRequirementsPreview
+                    gatingConfig={convertBuilderStateToGatingConfig(state)}
+                    className="border-0 shadow-none bg-background"
+                  />
+                </UniversalProfileProvider>
         </div>
       ),
       isValid: () => true
@@ -278,8 +533,7 @@ const LockEditModalContent: React.FC<LockEditModalContentProps> = ({
         color: state.metadata.color || '#3b82f6',
         tags: state.metadata.tags || [],
         isPublic: state.metadata.isPublic || false,
-        // TODO: Convert requirements back to gatingConfig format
-        gatingConfig: lock.gatingConfig // For now, keep existing gating config
+        gatingConfig: convertBuilderStateToGatingConfig(state)
       };
 
       console.log('[LockEditModal] Updating lock:', updateRequest);
