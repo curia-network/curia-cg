@@ -1108,6 +1108,11 @@
   dependencies:
     tslib "^2.8.0"
 
+"@graphql-typed-document-node/core@^3.2.0":
+  version "3.2.0"
+  resolved "https://registry.npmjs.org/@graphql-typed-document-node/core/-/core-3.2.0.tgz#5f3d96ec6b2354ad6d8a28bf216a1d97b5426861"
+  integrity sha512-mB9oAsNCm9aM3/SOv4YtBMqZbYj10R7dkq8byBqxGY/ncFwhf2oQzMV+LCRlWoDSEBJ3COiR1yeDvMtsoOsuFQ==
+
 "@hapi/hoek@^9.0.0":
   version "9.3.0"
   resolved "https://registry.npmjs.org/@hapi/hoek/-/hoek-9.3.0.tgz"
@@ -1515,9 +1520,9 @@
   dependencies:
     "@lukso/lsp2-contracts" "~0.15.0"
 
-"@lukso/lsp4-contracts@^0.16.7":
+"@lukso/lsp4-contracts@^0.16.7", "@lukso/lsp4-contracts@~0.16.0", "@lukso/lsp4-contracts@~0.16.2":
   version "0.16.7"
-  resolved "https://registry.npmjs.org/@lukso/lsp4-contracts/-/lsp4-contracts-0.16.7.tgz#734a4e42dcd7075a69ba898b7860227aa0cfb9ce"
+  resolved "https://registry.npmjs.org/@lukso/lsp4-contracts/-/lsp4-contracts-0.16.7.tgz"
   integrity sha512-UL8mjKVftTRGTAYIH98YABW2P9CABaqBdkTwWQn1cIFE+iycRzv7zwg33xuKysxjWfaG4jincSasKIRMVY6aqQ==
   dependencies:
     "@erc725/smart-contracts-v8" "npm:@erc725/smart-contracts@8.0.0"
@@ -1529,14 +1534,6 @@
   integrity sha512-M85S5DN3hqHTIfTs7Cs1dqM4EE2ftEZfh0RcPV00+Fgo2IID8QQxKNFiGP1I59Upn6GsDar/RJpFyV1SCnAOGw==
   dependencies:
     "@erc725/smart-contracts" "^7.0.0"
-    "@lukso/lsp2-contracts" "~0.15.0"
-
-"@lukso/lsp4-contracts@~0.16.0", "@lukso/lsp4-contracts@~0.16.2":
-  version "0.16.7"
-  resolved "https://registry.npmjs.org/@lukso/lsp4-contracts/-/lsp4-contracts-0.16.7.tgz"
-  integrity sha512-UL8mjKVftTRGTAYIH98YABW2P9CABaqBdkTwWQn1cIFE+iycRzv7zwg33xuKysxjWfaG4jincSasKIRMVY6aqQ==
-  dependencies:
-    "@erc725/smart-contracts-v8" "npm:@erc725/smart-contracts@8.0.0"
     "@lukso/lsp2-contracts" "~0.15.0"
 
 "@lukso/lsp5-contracts@~0.15.0":
@@ -1561,9 +1558,9 @@
     "@lukso/lsp25-contracts" "~0.15.0"
     "@openzeppelin/contracts" "^4.9.3"
 
-"@lukso/lsp7-contracts@^0.16.8":
+"@lukso/lsp7-contracts@^0.16.8", "@lukso/lsp7-contracts@~0.16.3":
   version "0.16.8"
-  resolved "https://registry.npmjs.org/@lukso/lsp7-contracts/-/lsp7-contracts-0.16.8.tgz#296d0134f57b84f785469c7be44c56b969c958df"
+  resolved "https://registry.npmjs.org/@lukso/lsp7-contracts/-/lsp7-contracts-0.16.8.tgz"
   integrity sha512-LH6AJCeR3Bl1H8yDcJBtGkohPeO6Jj3bX7A3+NQylRk3OEIF+8U40+poa72ehMNBIjgA0JB1iFoO7/S9xRzldA==
   dependencies:
     "@lukso/lsp1-contracts" "~0.15.0"
@@ -1583,17 +1580,6 @@
     "@lukso/lsp2-contracts" "~0.15.0"
     "@lukso/lsp4-contracts" "~0.15.0"
     "@openzeppelin/contracts" "^4.9.3"
-
-"@lukso/lsp7-contracts@~0.16.3":
-  version "0.16.8"
-  resolved "https://registry.npmjs.org/@lukso/lsp7-contracts/-/lsp7-contracts-0.16.8.tgz"
-  integrity sha512-LH6AJCeR3Bl1H8yDcJBtGkohPeO6Jj3bX7A3+NQylRk3OEIF+8U40+poa72ehMNBIjgA0JB1iFoO7/S9xRzldA==
-  dependencies:
-    "@lukso/lsp1-contracts" "~0.15.0"
-    "@lukso/lsp17contractextension-contracts" "~0.16.0"
-    "@lukso/lsp2-contracts" "~0.15.0"
-    "@lukso/lsp4-contracts" "~0.16.0"
-    "@openzeppelin/contracts" "^4.9.6"
 
 "@lukso/lsp8-contracts@~0.15.0":
   version "0.15.0"
@@ -6977,6 +6963,18 @@ graphemer@^1.4.0:
   resolved "https://registry.npmjs.org/graphemer/-/graphemer-1.4.0.tgz"
   integrity sha512-EtKwoO6kxCL9WO5xipiHTZlSzBm7WLT627TqC/uVRd0HKmq8NXyebnNYxDoBi7wt8eTWrUrKXCOVaFq9x1kgag==
 
+graphql-request@^7.2.0:
+  version "7.2.0"
+  resolved "https://registry.npmjs.org/graphql-request/-/graphql-request-7.2.0.tgz#af4aa25f27a087dd4fc93a4ff54a0f59c4487269"
+  integrity sha512-0GR7eQHBFYz372u9lxS16cOtEekFlZYB2qOyq8wDvzRmdRSJ0mgUVX1tzNcIzk3G+4NY+mGtSz411wZdeDF/+A==
+  dependencies:
+    "@graphql-typed-document-node/core" "^3.2.0"
+
+graphql@^16.11.0:
+  version "16.11.0"
+  resolved "https://registry.npmjs.org/graphql/-/graphql-16.11.0.tgz#96d17f66370678027fdf59b2d4c20b4efaa8a633"
+  integrity sha512-mS1lbMsxgQj6hge1XZ6p7GPhbrtFwUFYi3wRzXAC/FmYnyXMTvvI3td3rjmQ2u8ewXueaSvRPWaEcgVVOT9Jnw==
+
 h3@^1.15.2:
   version "1.15.3"
   resolved "https://registry.npmjs.org/h3/-/h3-1.15.3.tgz"
@@ -10668,9 +10666,9 @@ tslib@^2.0.0, tslib@^2.1.0, tslib@^2.4.0, tslib@^2.6.0, tslib@^2.8.0:
   resolved "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz"
   integrity sha512-oJFu94HQb+KVduSUQL7wnpmqnfmLsOA/nAh6b6EH0wCEoK0/mPeXU6c3wKDV83MkOuHPRHtSXKKU99IBazS/2w==
 
-tsx@^4.19.4:
+tsx@^4.20.3:
   version "4.20.3"
-  resolved "https://registry.npmjs.org/tsx/-/tsx-4.20.3.tgz"
+  resolved "https://registry.npmjs.org/tsx/-/tsx-4.20.3.tgz#f913e4911d59ad177c1bcee19d1035ef8dd6e2fb"
   integrity sha512-qjbnuR9Tr+FJOMBqJCW5ehvIo/buZq7vH7qD7JziU98h6l3qGy0a/yPFjwO+y0/T7GFpNgNAvEcPPVfyT8rrPQ==
   dependencies:
     esbuild "~0.25.0"

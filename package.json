@@ -71,6 +71,8 @@
     "ethereum-identity-kit": "^0.2.48",
     "ethers": "^5.7.2",
     "framer-motion": "^12.23.0",
+    "graphql": "^16.11.0",
+    "graphql-request": "^7.2.0",
     "highlight.js": "^11.11.1",
     "jsonwebtoken": "^9.0.2",
     "jwt-decode": "^4.0.0",
@@ -116,7 +118,7 @@
     "ts-node": "^11.0.0-beta.1",
     "ts-node-dev": "^2.0.0",
     "tsconfig-paths": "^4.2.0",
-    "tsx": "^4.19.4",
+    "tsx": "^4.20.3",
     "typescript": "^5"
   }
 }
