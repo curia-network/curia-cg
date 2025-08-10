@@ -19,6 +19,7 @@ import {
 import { LockWithStats } from '@/types/locks';
 import { LockCard } from './LockCard';
 import { LockPreviewModal } from './LockPreviewModal';
+import { LockEditModal } from './LockEditModal';
 import { DeleteLockDialog } from './DeleteLockDialog';
 import { RenameLockDialog } from './RenameLockDialog';
 import { useAuth } from '@/contexts/AuthContext';
@@ -58,6 +59,7 @@ export const LockBrowser: React.FC<LockBrowserProps> = ({
   const [isModalOpen, setIsModalOpen] = useState(false);
   
   // Dialog States
+  const [editDialogLock, setEditDialogLock] = useState<LockWithStats | null>(null);
   const [deleteDialogLock, setDeleteDialogLock] = useState<LockWithStats | null>(null);
   const [renameDialogLock, setRenameDialogLock] = useState<LockWithStats | null>(null);
   
@@ -113,6 +115,10 @@ export const LockBrowser: React.FC<LockBrowserProps> = ({
   };
 
   // Action handlers
+  const handleEdit = (lock: LockWithStats) => {
+    setEditDialogLock(lock);
+  };
+
   const handleRename = (lock: LockWithStats) => {
     setRenameDialogLock(lock);
   };
@@ -398,6 +404,7 @@ export const LockBrowser: React.FC<LockBrowserProps> = ({
               onSelect={() => handleLockSelect(lock)}
               variant={viewMode}
               showCreator={filters.filter !== 'mine'}
+              onEdit={handleEdit}
               onRename={handleRename}
               onDuplicate={handleDuplicate}
               onDelete={handleDelete}
@@ -441,6 +448,20 @@ export const LockBrowser: React.FC<LockBrowserProps> = ({
         onClose={() => setRenameDialogLock(null)}
         onConfirm={handleRenameConfirm}
         isRenaming={isRenaming}
+      />
+
+      <LockEditModal
+        lock={editDialogLock}
+        isOpen={!!editDialogLock}
+        onClose={() => setEditDialogLock(null)}
+        onSave={() => {
+          setEditDialogLock(null);
+          toast({
+            title: 'Lock updated',
+            description: 'Your lock has been successfully updated',
+          });
+          refetch(); // Refresh the locks list
+        }}
       />
     </div>
   );

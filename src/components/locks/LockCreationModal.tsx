@@ -1160,4 +1160,7 @@ export const LockCreationModal: React.FC<LockCreationModalProps> = ({
       </DialogContent>
     </Dialog>
   );
-}; 
+};
+
+// Export the RequirementsStep component for reuse in edit modal
+export { RequirementsStep }; 

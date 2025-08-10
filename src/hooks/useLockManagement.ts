@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { authFetch, authFetchJson } from '@/utils/authFetch';
-import { LockWithStats, LockListResponse } from '@/types/locks';
+import { LockWithStats, LockListResponse, UpdateLockRequest } from '@/types/locks';
 
 interface LockFilters {
   search?: string;
@@ -108,6 +108,33 @@ export const useDeleteLock = () => {
   });
 };
 
+// Full lock update mutation (comprehensive editing)
+export const useUpdateLock = () => {
+  const queryClient = useQueryClient();
+  
+  return useMutation({
+    mutationFn: async ({ lockId, updates }: { lockId: number; updates: Omit<UpdateLockRequest, 'id'> }) => {
+      const response = await authFetchJson<{ success: boolean; data: LockWithStats }>(`/api/locks/${lockId}`, {
+        method: 'PUT',
+        body: JSON.stringify(updates),
+      });
+      return response.data;
+    },
+    onSuccess: (updatedLock) => {
+      // Update the specific lock in cache
+      queryClient.setQueryData(['locks', updatedLock.id], updatedLock);
+      
+      // Invalidate the locks list to refresh it
+      queryClient.invalidateQueries({ queryKey: ['locks'], exact: false });
+      
+      console.log(`[useLockManagement] Lock updated successfully: ${updatedLock.name}`);
+    },
+    onError: (error) => {
+      console.error('Failed to update lock:', error);
+    }
+  });
+};
+
 // Duplicate lock mutation
 export const useDuplicateLock = () => {
   const queryClient = useQueryClient();
@@ -165,27 +192,32 @@ export const useDuplicateLock = () => {
 // Helper hook for lock management operations
 export const useLockManagement = () => {
   const renameMutation = useRenameLock();
+  const updateMutation = useUpdateLock();
   const deleteMutation = useDeleteLock();
   const duplicateMutation = useDuplicateLock();
   
   return {
     // Mutations
     renameLock: renameMutation.mutateAsync,
+    updateLock: updateMutation.mutateAsync,
     deleteLock: deleteMutation.mutateAsync,
     duplicateLock: duplicateMutation.mutateAsync,
     
     // Loading states
     isRenaming: renameMutation.isPending,
+    isUpdating: updateMutation.isPending,
     isDeleting: deleteMutation.isPending,
     isDuplicating: duplicateMutation.isPending,
     
     // Error states
     renameError: renameMutation.error,
+    updateError: updateMutation.error,
     deleteError: deleteMutation.error,
     duplicateError: duplicateMutation.error,
     
     // Reset functions
     resetRenameError: renameMutation.reset,
+    resetUpdateError: updateMutation.reset,
     resetDeleteError: deleteMutation.reset,
     resetDuplicateError: duplicateMutation.reset,
   };

@@ -35,6 +35,7 @@ interface LockCardProps {
   showCreator?: boolean;
   className?: string;
   // Action handlers (optional)
+  onEdit?: (lock: LockWithStats) => void;
   onRename?: (lock: LockWithStats) => void;
   onDuplicate?: (lock: LockWithStats) => void;
   onDelete?: (lock: LockWithStats) => void;
@@ -47,6 +48,7 @@ export const LockCard: React.FC<LockCardProps> = ({
   variant = 'grid',
   showCreator = true,
   className = '',
+  onEdit,
   onRename,
   onDuplicate,
   onDelete
@@ -159,6 +161,12 @@ export const LockCard: React.FC<LockCardProps> = ({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+          {onEdit && (
+            <DropdownMenuItem onClick={() => onEdit(lock)}>
+              <Edit2 className="h-4 w-4 mr-2" />
+              Edit Lock
+            </DropdownMenuItem>
+          )}
           {onRename && (
             <DropdownMenuItem onClick={() => onRename(lock)}>
               <Edit2 className="h-4 w-4 mr-2" />
