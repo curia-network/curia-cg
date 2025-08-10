@@ -361,6 +361,7 @@ export interface LSP7TokenConfig {
   minAmount: string;
   name?: string;
   symbol?: string;
+  decimals?: number; // Store actual decimals for proper amount handling
 }
 
 export interface LSP8NFTConfig {

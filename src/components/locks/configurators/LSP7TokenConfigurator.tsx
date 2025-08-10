@@ -4,12 +4,14 @@ import React, { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ArrowLeft, Coins } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { ArrowLeft, Coins, Info } from 'lucide-react';
 import { ethers } from 'ethers';
 
 import { GatingRequirement, LSP7TokenConfig } from '@/types/locks';
 import { validateEthereumAddress } from '@/lib/requirements/validation';
 import { parseTokenAmount } from '@/lib/requirements/conversions';
+import { classifyLsp7Cached, getDisplayDecimals, isNonDivisibleToken, type Lsp7Divisibility } from '@/lib/lukso/lsp7Classification';
 
 interface LSP7TokenConfiguratorProps {
   editingRequirement?: GatingRequirement;
@@ -33,6 +35,8 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
   const [addressValidation, setAddressValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: false });
   const [amountValidation, setAmountValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: false });
   const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
+  const [tokenClassification, setTokenClassification] = useState<Lsp7Divisibility | null>(null);
+  const [actualDecimals, setActualDecimals] = useState<number>(18);
 
   // ===== INITIALIZATION =====
   
@@ -43,9 +47,13 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
       setTokenName(config.name || '');
       setTokenSymbol(config.symbol || '');
       
-      // Convert wei back to human readable
+      // Use stored decimals if available, otherwise default to 18
+      const decimals = config.decimals || 18;
+      setActualDecimals(decimals);
+      
+      // Convert wei back to human readable using actual decimals
       if (config.minAmount) {
-        const humanAmount = parseFloat(config.minAmount) / 1e18;
+        const humanAmount = parseFloat(ethers.utils.formatUnits(config.minAmount, decimals));
         setTokenAmount(humanAmount.toString());
       }
     }
@@ -76,13 +84,42 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
       return;
     }
     
+    // Enhanced validation based on token classification
+    if (tokenClassification) {
+      const isNonDivisible = isNonDivisibleToken(tokenClassification);
+      
+      if (isNonDivisible) {
+        // For non-divisible tokens, only allow whole numbers
+        if (!Number.isInteger(amount)) {
+          setAmountValidation({ 
+            isValid: false, 
+            error: 'Non-divisible tokens require whole numbers only' 
+          });
+          return;
+        }
+      } else {
+        // For divisible tokens, check precision based on actual decimals
+        const displayDecimals = getDisplayDecimals(tokenClassification);
+        const factor = Math.pow(10, displayDecimals);
+        const scaledAmount = amount * factor;
+        
+        if (!Number.isInteger(scaledAmount)) {
+          setAmountValidation({ 
+            isValid: false, 
+            error: `Maximum ${displayDecimals} decimal places allowed` 
+          });
+          return;
+        }
+      }
+    }
+    
     if (amount > 1e12) {
       setAmountValidation({ isValid: false, error: 'Amount too large' });
       return;
     }
     
     setAmountValidation({ isValid: true });
-  }, [tokenAmount]);
+  }, [tokenAmount, tokenClassification]);
 
   // ===== HANDLERS =====
   
@@ -90,8 +127,19 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
     if (!addressValidation.isValid || !amountValidation.isValid || !contractAddress.trim() || !tokenAmount.trim()) return;
 
     try {
-      // Convert to wei
-      const weiAmount = parseTokenAmount(tokenAmount, 18);
+      // Use actual decimals for proper conversion
+      const weiAmount = parseTokenAmount(tokenAmount, actualDecimals);
+      
+      // Create enhanced display name based on token classification
+      let displayName = `LSP7 Token: ≥ ${parseFloat(tokenAmount).toLocaleString()} ${tokenSymbol || 'tokens'}`;
+      if (tokenClassification && isNonDivisibleToken(tokenClassification)) {
+        if (tokenClassification.kind === 'LSP7_NON_DIVISIBLE') {
+          const reason = tokenClassification.reason === 'LSP4_NFT' ? 'Multi-unit NFT' : 'Non-divisible';
+          displayName += ` (${reason})`;
+        } else {
+          displayName += ` (Non-divisible)`;
+        }
+      }
       
       const requirement: GatingRequirement = {
         id: editingRequirement?.id || crypto.randomUUID(),
@@ -101,10 +149,11 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
           contractAddress: contractAddress.trim(),
           minAmount: weiAmount.toString(),
           name: tokenName.trim() || undefined,
-          symbol: tokenSymbol.trim() || undefined
+          symbol: tokenSymbol.trim() || undefined,
+          decimals: actualDecimals, // Store the actual decimals
         } as LSP7TokenConfig,
         isValid: true,
-        displayName: `LSP7 Token: ≥ ${parseFloat(tokenAmount).toLocaleString()} ${tokenSymbol || 'tokens'}`
+        displayName
       };
 
       onSave(requirement);
@@ -119,73 +168,67 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
     
     setIsLoadingMetadata(true);
     try {
-      console.log(`[LSP7 Configurator] Fetching metadata for contract: ${contractAddress}`);
+      console.log(`[LSP7 Configurator] Fetching enhanced metadata for contract: ${contractAddress}`);
 
-      // Setup provider
       const rpcUrl = process.env.NEXT_PUBLIC_LUKSO_MAINNET_RPC_URL || 'https://rpc.mainnet.lukso.network';
-      const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-
-      // First verify it's an LSP7 contract
-      const contract = new ethers.Contract(contractAddress, [
-        'function supportsInterface(bytes4) view returns (bool)',
-        'function getData(bytes32) view returns (bytes)',
-        'function getDataBatch(bytes32[]) view returns (bytes[])',
-        'function decimals() view returns (uint8)'
-      ], provider);
-
-      // Check LSP7 interface IDs (both new and legacy)
-      const LSP7_INTERFACE_ID_NEW = '0xc52d6008';
-      const LSP7_INTERFACE_ID_LEGACY = '0xb3c4928f';
-      let isLSP7 = false;
       
-      try {
-        const [newLSP7, legacyLSP7] = await Promise.all([
-          contract.supportsInterface(LSP7_INTERFACE_ID_NEW).catch(() => false),
-          contract.supportsInterface(LSP7_INTERFACE_ID_LEGACY).catch(() => false)
-        ]);
-        
-        isLSP7 = newLSP7 || legacyLSP7;
-        console.log(`[LSP7 Configurator] Interface check: LSP7=${isLSP7} (new=${newLSP7}, legacy=${legacyLSP7})`);
-      } catch (error) {
-        console.log(`[LSP7 Configurator] Interface check failed:`, error);
-        // Try proxy detection
-        try {
-          const implSlot = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc';
-          const slotValue = await provider.getStorageAt(contractAddress, implSlot);
-          if (slotValue && slotValue !== ethers.constants.HashZero) {
-            const implementationAddress = ethers.utils.getAddress('0x' + slotValue.slice(-40));
-            console.log(`[LSP7 Configurator] Found EIP-1967 proxy, implementation: ${implementationAddress}`);
-            const implContract = new ethers.Contract(implementationAddress, [
-              'function supportsInterface(bytes4) view returns (bool)'
-            ], provider);
-            const [newLSP7, legacyLSP7] = await Promise.all([
-              implContract.supportsInterface(LSP7_INTERFACE_ID_NEW).catch(() => false),
-              implContract.supportsInterface(LSP7_INTERFACE_ID_LEGACY).catch(() => false)
-            ]);
-            isLSP7 = newLSP7 || legacyLSP7;
-          }
-        } catch (proxyError) {
-          console.log(`[LSP7 Configurator] Proxy detection failed:`, proxyError);
-        }
-      }
-
-      if (!isLSP7) {
+      // 1. First classify the token using our robust detection pipeline
+      console.log(`[LSP7 Configurator] Step 1: Classifying token...`);
+      const classification = await classifyLsp7Cached({
+        asset: contractAddress as `0x${string}`,
+        rpcUrl,
+      });
+      
+      console.log(`[LSP7 Configurator] ✅ Classification result:`, classification);
+      setTokenClassification(classification);
+      
+      // Handle non-LSP7 tokens
+      if (classification.kind === 'NOT_LSP7') {
         throw new Error('Contract does not appear to be a valid LUKSO LSP7 token.');
       }
+      
+      if (classification.kind === 'UNKNOWN') {
+        console.warn(`[LSP7 Configurator] Token classification unknown: ${classification.note}`);
+      }
 
-      // Fetch LSP4 metadata using ERC725Y data keys
+      // 2. Get display decimals and actual decimals  
+      let contractDecimals = 18; // Fallback
+      
+      // Try to get actual decimals from contract
+      try {
+        const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+        const contract = new ethers.Contract(contractAddress, [
+          'function decimals() view returns (uint8)'
+        ], provider);
+        contractDecimals = await contract.decimals();
+        console.log(`[LSP7 Configurator] Contract decimals: ${contractDecimals}`);
+      } catch (decimalsError) {
+        console.log(`[LSP7 Configurator] Could not fetch contract decimals:`, decimalsError);
+      }
+      
+      // Use the more conservative approach - actual contract decimals for storage,
+      // but respect classification for display validation
+      setActualDecimals(contractDecimals);
+
+      // 3. Fetch basic metadata (name, symbol)
+      console.log(`[LSP7 Configurator] Step 2: Fetching basic metadata...`);
+      const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+      const contract = new ethers.Contract(contractAddress, [
+        'function getData(bytes32) view returns (bytes)',
+        'function getDataBatch(bytes32[]) view returns (bytes[])',
+      ], provider);
+
       let name = 'Unknown Token';
       let symbol = 'UNK';
 
       try {
-        // First try ERC725Y data keys
+        // Try ERC725Y data keys first
         const LSP4_TOKEN_NAME_KEY = '0xdeba1e292f8ba88238e10ab3c7f88bd4be4fac56cad5194b6ecceaf653468af1';
         const LSP4_TOKEN_SYMBOL_KEY = '0x2f0a68ab07768e01943a599e73362a0e17a63a72e94dd2e384d2c1d4db932756';
         
         const dataKeys = [LSP4_TOKEN_NAME_KEY, LSP4_TOKEN_SYMBOL_KEY];
         const [nameBytes, symbolBytes] = await contract.getDataBatch(dataKeys);
         
-        // Decode the bytes data
         if (nameBytes && nameBytes !== '0x') {
           name = ethers.utils.toUtf8String(nameBytes);
         }
@@ -193,11 +236,11 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
           symbol = ethers.utils.toUtf8String(symbolBytes);
         }
         
-        console.log(`[LSP7 Configurator] ✅ LSP7 metadata via ERC725Y: name=${name}, symbol=${symbol}`);
+        console.log(`[LSP7 Configurator] ✅ Metadata via ERC725Y: name=${name}, symbol=${symbol}`);
       } catch (erc725yError) {
-        console.log(`[LSP7 Configurator] ⚠️ LSP7 ERC725Y metadata failed, trying fallback:`, erc725yError);
+        console.log(`[LSP7 Configurator] ERC725Y metadata failed, trying fallback:`, erc725yError);
         
-        // Fallback: try standard ERC20-like functions
+        // Fallback to standard functions
         try {
           const fallbackContract = new ethers.Contract(contractAddress, [
             'function name() view returns (string)',
@@ -209,23 +252,25 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
             fallbackContract.symbol().catch(() => 'UNK')
           ]);
           
-          console.log(`[LSP7 Configurator] ⚠️ LSP7 fallback to standard functions: name=${name}, symbol=${symbol}`);
+          console.log(`[LSP7 Configurator] ✅ Metadata via fallback: name=${name}, symbol=${symbol}`);
         } catch (metadataError) {
-          console.log(`[LSP7 Configurator] ❌ LSP7 standard functions also failed:`, metadataError);
+          console.log(`[LSP7 Configurator] All metadata methods failed:`, metadataError);
         }
       }
 
-      // Update state with fetched metadata
+      // Update state
       setTokenName(name);
       setTokenSymbol(symbol);
 
-      console.log(`[LSP7 Configurator] ✅ Successfully fetched LSP7 metadata`);
+      console.log(`[LSP7 Configurator] ✅ Enhanced metadata fetch complete`);
 
     } catch (error) {
-      console.error('[LSP7 Configurator] Failed to fetch token metadata:', error);
-      // Keep placeholder values for user feedback
+      console.error('[LSP7 Configurator] Enhanced metadata fetch failed:', error);
+      // Set fallback values
       setTokenName('Unknown Token');
       setTokenSymbol('UNK');
+      setTokenClassification(null);
+      // Don't change actualDecimals - keep the previous value or default
     } finally {
       setIsLoadingMetadata(false);
     }
@@ -319,17 +364,45 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
             </div>
 
             {/* Token Metadata */}
-            {(tokenName || tokenSymbol) && (
+            {(tokenName || tokenSymbol || tokenClassification) && (
               <div className="p-3 bg-orange-50 dark:bg-orange-900/30 rounded-lg">
                 <div className="flex items-center justify-between">
-                  <div>
+                  <div className="flex-1">
                     <p className="text-sm font-medium text-orange-900 dark:text-orange-100">
                       {tokenName || 'Unknown Token'}
                     </p>
                     <p className="text-xs text-orange-700 dark:text-orange-300">
                       {tokenSymbol || 'UNK'}
                     </p>
+                    
+                    {/* Classification badges */}
+                    {tokenClassification && (
+                      <div className="flex items-center gap-2 mt-2">
+                        {tokenClassification.kind === 'LSP7_DIVISIBLE' && (
+                          <Badge variant="outline" className="text-xs bg-green-50 text-green-700 border-green-200">
+                            Divisible ({tokenClassification.decimals} decimals)
+                          </Badge>
+                        )}
+                        {tokenClassification.kind === 'LSP7_NON_DIVISIBLE' && (
+                          <Badge variant="outline" className="text-xs bg-blue-50 text-blue-700 border-blue-200">
+                            {tokenClassification.reason === 'LSP4_NFT' ? 'Multi-unit NFT' : 'Non-divisible'}
+                          </Badge>
+                        )}
+                        {tokenClassification.kind === 'UNKNOWN' && (
+                          <Badge variant="outline" className="text-xs bg-yellow-50 text-yellow-700 border-yellow-200">
+                            Unknown Type
+                          </Badge>
+                        )}
+                      </div>
+                    )}
                   </div>
+                  
+                  {/* Info icon with tooltip for non-divisible tokens */}
+                  {tokenClassification && isNonDivisibleToken(tokenClassification) && (
+                    <div className="flex-shrink-0 ml-2" title="This token only accepts whole number amounts">
+                      <Info className="h-4 w-4 text-orange-600" />
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -338,12 +411,30 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
             <div>
               <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">
                 Minimum Amount *
+                {tokenClassification && isNonDivisibleToken(tokenClassification) && (
+                  <span className="text-xs text-blue-600 dark:text-blue-400 ml-2">(Whole numbers only)</span>
+                )}
               </Label>
-              <div className="flex space-x-3 mt-1">
+              
+              {/* Helper text based on token type */}
+              {tokenClassification && (
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                  {isNonDivisibleToken(tokenClassification) 
+                    ? "This token doesn't support fractional amounts. Enter whole numbers like 1, 2, 10, etc."
+                    : `This token supports up to ${getDisplayDecimals(tokenClassification)} decimal places.`
+                  }
+                </p>
+              )}
+              
+              <div className="flex space-x-3 mt-2">
                 <div className="flex-1">
                   <Input
                     type="text"
-                    placeholder="e.g., 100"
+                    placeholder={
+                      tokenClassification && isNonDivisibleToken(tokenClassification) 
+                        ? "e.g., 5" 
+                        : "e.g., 100.5"
+                    }
                     value={tokenAmount}
                     onChange={(e) => setTokenAmount(e.target.value)}
                     onKeyDown={handleKeyPress}

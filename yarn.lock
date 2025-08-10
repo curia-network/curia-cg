@@ -1515,6 +1515,14 @@
   dependencies:
     "@lukso/lsp2-contracts" "~0.15.0"
 
+"@lukso/lsp4-contracts@^0.16.7":
+  version "0.16.7"
+  resolved "https://registry.npmjs.org/@lukso/lsp4-contracts/-/lsp4-contracts-0.16.7.tgz#734a4e42dcd7075a69ba898b7860227aa0cfb9ce"
+  integrity sha512-UL8mjKVftTRGTAYIH98YABW2P9CABaqBdkTwWQn1cIFE+iycRzv7zwg33xuKysxjWfaG4jincSasKIRMVY6aqQ==
+  dependencies:
+    "@erc725/smart-contracts-v8" "npm:@erc725/smart-contracts@8.0.0"
+    "@lukso/lsp2-contracts" "~0.15.0"
+
 "@lukso/lsp4-contracts@~0.15.0":
   version "0.15.0"
   resolved "https://registry.npmjs.org/@lukso/lsp4-contracts/-/lsp4-contracts-0.15.0.tgz"
@@ -1552,6 +1560,17 @@
     "@lukso/lsp20-contracts" "~0.15.0"
     "@lukso/lsp25-contracts" "~0.15.0"
     "@openzeppelin/contracts" "^4.9.3"
+
+"@lukso/lsp7-contracts@^0.16.8":
+  version "0.16.8"
+  resolved "https://registry.npmjs.org/@lukso/lsp7-contracts/-/lsp7-contracts-0.16.8.tgz#296d0134f57b84f785469c7be44c56b969c958df"
+  integrity sha512-LH6AJCeR3Bl1H8yDcJBtGkohPeO6Jj3bX7A3+NQylRk3OEIF+8U40+poa72ehMNBIjgA0JB1iFoO7/S9xRzldA==
+  dependencies:
+    "@lukso/lsp1-contracts" "~0.15.0"
+    "@lukso/lsp17contractextension-contracts" "~0.16.0"
+    "@lukso/lsp2-contracts" "~0.15.0"
+    "@lukso/lsp4-contracts" "~0.16.0"
+    "@openzeppelin/contracts" "^4.9.6"
 
 "@lukso/lsp7-contracts@~0.15.0":
   version "0.15.0"

@@ -264,19 +264,33 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
       console.log(`[RichRequirementsDisplay] 🔍 DEBUG - Available tokenMetadata keys:`, Object.keys(tokenMetadata));
       console.log(`[RichRequirementsDisplay] 🔍 DEBUG - isLoadingTokenMetadata:`, isLoadingTokenMetadata);
       
+      // Prioritize enhanced metadata from userStatus.balances (which has classification info)
+      const enhancedName = tokenData?.name || metadata?.name || token.name;
+      const enhancedSymbol = tokenData?.symbol || metadata?.symbol || token.symbol;
+      const enhancedDecimals = tokenData?.decimals || metadata?.decimals || 18;
+      const enhancedIconUrl = metadata?.iconUrl; // Icon still comes from separate metadata
+      
       tokenVerifications[tokenKey] = {
         balance: tokenData?.raw || '0',
         formattedBalance: tokenData?.formatted || '0',
-        name: metadata?.name || token.name,
-        symbol: metadata?.symbol || token.symbol,
-        decimals: metadata?.decimals || tokenData?.decimals,
-        iconUrl: metadata?.iconUrl,
+        name: enhancedName,
+        symbol: enhancedSymbol,
+        decimals: enhancedDecimals,
+        iconUrl: enhancedIconUrl,
         meetsRequirement: tokenData ? 
           ethers.BigNumber.from(tokenData.raw).gte(ethers.BigNumber.from(token.minAmount || '0')) : false,
         isLoading: isLoadingTokenMetadata && !metadata
       };
       
-      console.log(`[RichRequirementsDisplay] 🔧 Token verification for ${token.contractAddress} (key: ${tokenKey}): balance=${tokenData?.raw || '0'}, meets=${tokenVerifications[tokenKey].meetsRequirement}, iconUrl=${metadata?.iconUrl || 'NO ICON'}, metadataKeys=${Object.keys(tokenMetadata)}`);
+      console.log(`[RichRequirementsDisplay] 🔧 Token verification for ${token.contractAddress} (key: ${tokenKey}):`, {
+        tokenType: token.tokenType,
+        rawBalance: tokenData?.raw || '0',
+        formattedBalance: tokenData?.formatted || '0',
+        enhancedDecimals,
+        meets: tokenVerifications[tokenKey].meetsRequirement,
+        minAmount: token.minAmount,
+        tokenData: tokenData ? { raw: tokenData.raw, formatted: tokenData.formatted, decimals: tokenData.decimals, name: tokenData.name, symbol: tokenData.symbol } : 'NO TOKEN DATA'
+      });
     });
   }
 
@@ -461,8 +475,30 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
                 let displayAmount: string;
                 
                 if (tokenReq.tokenType === 'LSP7') {
-                  displayAmount = ethers.utils.formatUnits(tokenReq.minAmount || '0', tokenData?.decimals || 18);
+                  // Smart decimal detection: if minAmount is small (like 1-100) but would display as tiny decimals,
+                  // it's likely a non-divisible token where minAmount was stored as the human-readable amount
+                  const rawMinAmount = ethers.BigNumber.from(tokenReq.minAmount || '0');
+                  const minAmountNumber = parseFloat(tokenReq.minAmount || '0');
+                  
+                  // Check if this looks like a non-divisible token scenario
+                  const looksLikeNonDivisible = minAmountNumber > 0 && minAmountNumber <= 1000 && rawMinAmount.lt(ethers.BigNumber.from('1000'));
+                  
+                  if (looksLikeNonDivisible) {
+                    // Display the raw amount as-is (it's likely already human-readable)
+                    displayAmount = tokenReq.minAmount || '0';
+                    console.log(`[RichRequirementsDisplay] 🔧 Detected non-divisible LSP7 ${tokenReq.contractAddress}: displaying ${displayAmount} directly`);
+                  } else {
+                    // Use proper decimal formatting for divisible tokens
+                    const actualDecimals = tokenData?.decimals || 18;
+                    displayAmount = ethers.utils.formatUnits(tokenReq.minAmount || '0', actualDecimals);
+                    
+                    // Clean up unnecessary decimals
+                    if (parseFloat(displayAmount) === Math.floor(parseFloat(displayAmount))) {
+                      displayAmount = Math.floor(parseFloat(displayAmount)).toString();
+                    }
+                  }
                 } else {
+                  // LSP8 tokens - always whole numbers
                   displayAmount = tokenReq.minAmount || '1';
                   // For LSP8 with specific token ID, show token ID in display
                   if (tokenReq.tokenId) {
@@ -514,7 +550,30 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
                             // For LSP7 or LSP8 collection requirements
                             <>
                               Required: {displayAmount} {tokenReq.tokenType === 'LSP8' ? tokenData?.symbol || tokenReq.symbol || 'tokens' : ''}
-                              {userStatus.connected && tokenData && ` • You have: ${tokenData.formattedBalance} ${tokenData.symbol || 'tokens'}`}
+                              {userStatus.connected && tokenData && ` • You have: ${
+                                // Apply the same smart detection for user balance display
+                                (() => {
+                                  if (tokenReq.tokenType === 'LSP8') {
+                                    // LSP8 tokens are always whole numbers
+                                    return Math.floor(parseFloat(tokenData.formattedBalance) || 0).toString();
+                                  } else {
+                                    // For LSP7, check if this looks like a non-divisible token
+                                    const balanceNumber = parseFloat(tokenData.formattedBalance || '0');
+                                    const rawBalance = ethers.BigNumber.from(tokenData.balance || '0');
+                                    
+                                    // If balance is very small (likely in wei) but greater than 0, it might be a non-divisible token
+                                    if (balanceNumber > 0 && balanceNumber < 0.001 && rawBalance.gt(0)) {
+                                      // Display the raw balance as whole numbers
+                                      const wholeBags = rawBalance.toString();
+                                      console.log(`[RichRequirementsDisplay] 🔧 Non-divisible LSP7 balance for ${tokenReq.contractAddress}: ${wholeBags} (from ${tokenData.formattedBalance})`);
+                                      return wholeBags;
+                                    }
+                                    
+                                    // For normal divisible tokens or zero balances
+                                    return tokenData.formattedBalance;
+                                  }
+                                })()
+                              } ${tokenData.symbol || 'tokens'}`}
                             </>
                           )}
                         </div>

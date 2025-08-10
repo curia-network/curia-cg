@@ -21,6 +21,7 @@ import React, {
 import { ethers } from 'ethers';
 import { ERC725 } from '@erc725/erc725.js';
 import LSP4DigitalAssetSchema from '@erc725/erc725.js/schemas/LSP4DigitalAsset.json';
+import { classifyLsp7Cached, getDisplayDecimals, isNonDivisibleToken } from '@/lib/lukso/lsp7Classification';
 
 // ===== INTERFACES =====
 
@@ -30,7 +31,13 @@ export interface TokenBalance {
   name?: string;
   symbol?: string;
   decimals?: number;
-  iconUrl?: string; // Add icon URL support
+  iconUrl?: string;
+  // Enhanced classification information
+  actualDecimals?: number; // Decimals from contract (may differ from display decimals)
+  displayDecimals?: number; // Decimals to use for display formatting
+  isDivisible?: boolean; // Whether the token is divisible
+  tokenType?: 'LSP7' | 'LSP8'; // Token standard type
+  classification?: string; // Classification details for debugging
 }
 
 export interface UniversalProfileContextType {
@@ -41,6 +48,7 @@ export interface UniversalProfileContextType {
   disconnect: () => void;
   getLyxBalance: () => Promise<string>;
   getTokenBalances: (tokenAddresses: string[]) => Promise<TokenBalance[]>;
+  getEnhancedTokenBalances: (tokenRequests: Array<{ contractAddress: string; tokenType: 'LSP7' | 'LSP8' }>) => Promise<TokenBalance[]>;
   signMessage: (message: string) => Promise<string>;
 }
 
@@ -185,7 +193,15 @@ export const UniversalProfileProvider: React.FC<{ children: ReactNode }> = ({ ch
       );
 
       // Use fetchData to automatically handle VerifiableURI decoding
-      const result = await erc725.fetchData(['LSP4Metadata']);
+      let result;
+      try {
+        result = await erc725.fetchData(['LSP4Metadata']);
+      } catch (erc725Error) {
+        console.log(`[UP Context] ⚠️ ERC725Y LSP4Metadata failed for ${contractAddress}:`, erc725Error);
+        tokenIconCache.set(lower, null);
+        return null;
+      }
+      
       const metadata = result.find(item => item.name === 'LSP4Metadata');
       
       if (!metadata?.value) {
@@ -289,6 +305,145 @@ export const UniversalProfileProvider: React.FC<{ children: ReactNode }> = ({ ch
     return balances;
   }, [provider, fetchTokenIcon]);
 
+  // Enhanced version that includes token classification
+  const getEnhancedTokenBalances = useCallback(async (
+    tokenRequests: Array<{ contractAddress: string; tokenType: 'LSP7' | 'LSP8' }>
+  ): Promise<TokenBalance[]> => {
+    if (!provider) return [];
+    
+    const balances = await Promise.all(
+      tokenRequests.map(async ({ contractAddress: addr, tokenType }) => {
+        try {
+          console.log(`[UP Context] Fetching enhanced metadata for ${addr} (${tokenType})`);
+          
+          // ✅ Use proper provider URL format
+          const providerUrl = 'https://rpc.mainnet.lukso.network';
+          
+          // Try to fetch basic metadata, but don't fail if ERC725Y doesn't work
+          let name: string | undefined;
+          let symbol: string | undefined;
+          
+          try {
+            const erc725 = new ERC725(
+              LSP4DigitalAssetSchema, 
+              addr, 
+              providerUrl,
+              {
+                ipfsGateway: 'https://api.universalprofile.cloud/ipfs/',
+              }
+            );
+            
+            const nameAndSymbol = await erc725.fetchData(['LSP4TokenName', 'LSP4TokenSymbol']);
+            name = nameAndSymbol.find(d => d.name === 'LSP4TokenName')?.value as string | undefined;
+            symbol = nameAndSymbol.find(d => d.name === 'LSP4TokenSymbol')?.value as string | undefined;
+            console.log(`[UP Context] ✅ ERC725Y metadata for ${addr}: name=${name}, symbol=${symbol}`);
+          } catch (erc725Error) {
+            console.log(`[UP Context] ⚠️ ERC725Y metadata failed for ${addr}, trying direct contract calls:`, erc725Error);
+            
+            // Fallback to direct contract calls
+            try {
+              const contract = new ethers.Contract(addr, [
+                'function name() view returns (string)',
+                'function symbol() view returns (string)'
+              ], provider);
+              
+              name = await contract.name();
+              symbol = await contract.symbol();
+              console.log(`[UP Context] ✅ Direct contract metadata for ${addr}: name=${name}, symbol=${symbol}`);
+            } catch (directError) {
+              console.log(`[UP Context] ⚠️ Direct contract metadata also failed for ${addr}:`, directError);
+              name = 'Unknown Token';
+              symbol = '???';
+            }
+          }
+
+          // Get actual decimals from contract
+          let actualDecimals = 18; // Default fallback
+          try {
+            if (tokenType === 'LSP7') {
+              const contract = new ethers.Contract(addr, ['function decimals() view returns (uint8)'], provider);
+              actualDecimals = await contract.decimals();
+            } else {
+              actualDecimals = 0; // LSP8 tokens don't have decimals
+            }
+          } catch {
+            console.log(`[UP Context] Could not fetch decimals for ${addr}, using defaults`);
+            actualDecimals = tokenType === 'LSP8' ? 0 : 18;
+          }
+
+          // Enhanced classification for LSP7 tokens
+          let displayDecimals = actualDecimals;
+          let isDivisible = actualDecimals > 0;
+          let classification = 'basic';
+
+          if (tokenType === 'LSP7') {
+            try {
+              console.log(`[UP Context] Classifying LSP7 token ${addr}...`);
+              const lsp7Classification = await classifyLsp7Cached({
+                asset: addr as `0x${string}`,
+                rpcUrl: providerUrl,
+              });
+              
+              displayDecimals = getDisplayDecimals(lsp7Classification);
+              isDivisible = !isNonDivisibleToken(lsp7Classification);
+              classification = `${lsp7Classification.kind}${lsp7Classification.kind === 'LSP7_NON_DIVISIBLE' ? `:${lsp7Classification.reason}` : ''}`;
+              
+              console.log(`[UP Context] ✅ LSP7 classification for ${addr}: ${classification}, displayDecimals: ${displayDecimals}`);
+            } catch (classificationError) {
+              console.log(`[UP Context] ⚠️ LSP7 classification failed for ${addr}, using fallback:`, classificationError);
+              // Keep the defaults we already set
+            }
+          } else {
+            // LSP8 tokens are always non-divisible NFTs
+            displayDecimals = 0;
+            isDivisible = false;
+            classification = 'LSP8_NFT';
+          }
+
+          // ===== FETCH TOKEN ICON =====
+          let iconUrl: string | undefined;
+          try {
+            iconUrl = await fetchTokenIcon(addr) || undefined;
+          } catch (iconError) {
+            console.log(`[UP Context] Icon fetch failed (non-critical) for ${addr}:`, iconError);
+          }
+
+          return {
+            contractAddress: addr,
+            balance: '0', // This function only fetches metadata
+            name: name || 'Unknown Token',
+            symbol: symbol || 'UNK',
+            decimals: actualDecimals, // Keep for backward compatibility
+            iconUrl,
+            // Enhanced classification data
+            actualDecimals,
+            displayDecimals,
+            isDivisible,
+            tokenType,
+            classification,
+          };
+        } catch (error) {
+          console.error(`[UP Context] Error fetching enhanced metadata for token ${addr}:`, error);
+          // Return a fallback object
+          return { 
+            contractAddress: addr, 
+            balance: '0', 
+            name: 'Unknown Token', 
+            symbol: '???', 
+            decimals: tokenType === 'LSP8' ? 0 : 18,
+            actualDecimals: tokenType === 'LSP8' ? 0 : 18,
+            displayDecimals: tokenType === 'LSP8' ? 0 : 18,
+            isDivisible: tokenType !== 'LSP8',
+            tokenType,
+            classification: 'UNKNOWN',
+          };
+        }
+      })
+    );
+
+    return balances;
+  }, [provider, fetchTokenIcon]);
+
   const signMessage = useCallback(async (message: string): Promise<string> => {
     if (!provider) {
       throw new Error("Provider not available. Please connect your wallet.");
@@ -305,6 +460,7 @@ export const UniversalProfileProvider: React.FC<{ children: ReactNode }> = ({ ch
     disconnect,
     getLyxBalance,
     getTokenBalances,
+    getEnhancedTokenBalances,
     signMessage,
   };
 

@@ -60,6 +60,7 @@ export const useConditionalUniversalProfile = (): UniversalProfileContextType =>
     verifyPostRequirements: async () => ({ isValid: false, missingRequirements: [], errors: ['UP not activated'] }),
     getLyxBalance: async () => { throw new Error('Universal Profile not activated'); },
     getTokenBalances: async () => [],
+    getEnhancedTokenBalances: async () => [],
     checkTokenBalance: async () => { throw new Error('Universal Profile not activated'); },
     getTokenMetadata: async () => { throw new Error('Universal Profile not activated'); },
     signMessage: async () => { throw new Error('Universal Profile not activated'); },

@@ -124,7 +124,7 @@ CREATE TABLE "public"."authentication_sessions" (
     "last_accessed_at" timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL,
     "is_active" boolean DEFAULT true NOT NULL,
     CONSTRAINT "authentication_sessions_pkey" PRIMARY KEY ("id"),
-    CONSTRAINT "check_session_identity_type" CHECK ((identity_type)::text = ANY ((ARRAY['ens'::character varying, 'universal_profile'::character varying, 'anonymous'::character varying])::text[]))
+    CONSTRAINT "check_session_identity_type" CHECK ((identity_type)::text = ANY ((ARRAY['ens'::character varying, 'universal_profile'::character varying, 'anonymous'::character varying, 'farcaster'::character varying])::text[]))
 ) WITH (oids = false);
 
 COMMENT ON COLUMN "public"."authentication_sessions"."user_id" IS 'User this session belongs to';
@@ -220,6 +220,45 @@ CREATE UNIQUE INDEX bookmarks_user_post_unique ON public.bookmarks USING btree (
 DELIMITER ;;
 
 CREATE TRIGGER "set_timestamp_bookmarks" BEFORE UPDATE ON "public"."bookmarks" FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();;
+
+DELIMITER ;
+
+DROP TABLE IF EXISTS "chat_channels";
+DROP SEQUENCE IF EXISTS chat_channels_id_seq;
+CREATE SEQUENCE chat_channels_id_seq INCREMENT 1 MINVALUE 1 MAXVALUE 2147483647 CACHE 1;
+
+CREATE TABLE "public"."chat_channels" (
+    "id" integer DEFAULT nextval('chat_channels_id_seq') NOT NULL,
+    "community_id" text NOT NULL,
+    "name" character varying(255) NOT NULL,
+    "description" text,
+    "irc_channel_name" character varying(255) NOT NULL,
+    "is_single_mode" boolean DEFAULT true NOT NULL,
+    "is_default" boolean DEFAULT false NOT NULL,
+    "created_at" timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "updated_at" timestamptz DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    "settings" jsonb DEFAULT '{}' NOT NULL,
+    CONSTRAINT "chat_channels_pkey" PRIMARY KEY ("id")
+) WITH (oids = false);
+
+CREATE INDEX chat_channels_community_id_index ON public.chat_channels USING btree (community_id);
+
+CREATE UNIQUE INDEX chat_channels_community_id_name_unique_index ON public.chat_channels USING btree (community_id, name);
+
+CREATE UNIQUE INDEX chat_channels_community_id_irc_channel_name_unique_index ON public.chat_channels USING btree (community_id, irc_channel_name);
+
+CREATE INDEX chat_channels_settings_index ON public.chat_channels USING gin (settings);
+
+CREATE INDEX chat_channels_is_single_mode_index ON public.chat_channels USING btree (is_single_mode);
+
+CREATE INDEX chat_channels_community_default_idx ON public.chat_channels USING btree (community_id, is_default) WHERE (is_default = true);
+
+CREATE INDEX chat_channels_one_default_per_community ON public.chat_channels USING btree (community_id) WHERE (is_default = true);
+
+
+DELIMITER ;;
+
+CREATE TRIGGER "set_timestamp_chat_channels" BEFORE UPDATE ON "public"."chat_channels" FOR EACH ROW EXECUTE FUNCTION trigger_set_timestamp();;
 
 DELIMITER ;
 
@@ -936,8 +975,8 @@ CREATE TABLE "public"."users" (
     "auth_expires_at" timestamptz,
     "last_auth_at" timestamptz,
     CONSTRAINT "users_pkey" PRIMARY KEY ("user_id"),
-    CONSTRAINT "check_identity_type" CHECK ((identity_type)::text = ANY ((ARRAY['legacy'::character varying, 'ens'::character varying, 'universal_profile'::character varying, 'anonymous'::character varying])::text[])),
-    CONSTRAINT "check_identity_data" CHECK ((((identity_type)::text = 'legacy'::text) AND (wallet_address IS NULL)) OR (((identity_type)::text = 'ens'::text) AND (ens_domain IS NOT NULL) AND (wallet_address IS NOT NULL)) OR (((identity_type)::text = 'universal_profile'::text) AND (up_address IS NOT NULL)) OR (((identity_type)::text = 'anonymous'::text) AND (is_anonymous = true)))
+    CONSTRAINT "check_identity_data" CHECK ((((identity_type)::text = 'legacy'::text) AND (wallet_address IS NULL)) OR (((identity_type)::text = 'ens'::text) AND (ens_domain IS NOT NULL) AND (wallet_address IS NOT NULL)) OR (((identity_type)::text = 'universal_profile'::text) AND (up_address IS NOT NULL)) OR (((identity_type)::text = 'anonymous'::text) AND (is_anonymous = true)) OR ((identity_type)::text = 'farcaster'::text)),
+    CONSTRAINT "check_identity_type" CHECK ((identity_type)::text = ANY ((ARRAY['legacy'::character varying, 'ens'::character varying, 'universal_profile'::character varying, 'anonymous'::character varying, 'farcaster'::character varying])::text[]))
 ) WITH (oids = false);
 
 COMMENT ON COLUMN "public"."users"."settings" IS 'JSON field for storing additional user data from Common Ground (LUKSO address, social handles, premium status, etc.)';
@@ -999,6 +1038,8 @@ ALTER TABLE ONLY "public"."boards" ADD CONSTRAINT "boards_community_id_fkey" FOR
 ALTER TABLE ONLY "public"."bookmarks" ADD CONSTRAINT "bookmarks_community_id_fkey" FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE NOT DEFERRABLE;
 ALTER TABLE ONLY "public"."bookmarks" ADD CONSTRAINT "bookmarks_post_id_fkey" FOREIGN KEY (post_id) REFERENCES posts(id) ON DELETE CASCADE NOT DEFERRABLE;
 ALTER TABLE ONLY "public"."bookmarks" ADD CONSTRAINT "bookmarks_user_id_fkey" FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE NOT DEFERRABLE;
+
+ALTER TABLE ONLY "public"."chat_channels" ADD CONSTRAINT "chat_channels_community_id_fkey" FOREIGN KEY (community_id) REFERENCES communities(id) ON DELETE CASCADE NOT DEFERRABLE;
 
 ALTER TABLE ONLY "public"."comments" ADD CONSTRAINT "comments_author_user_id_fkey" FOREIGN KEY (author_user_id) REFERENCES users(user_id) ON DELETE CASCADE NOT DEFERRABLE;
 ALTER TABLE ONLY "public"."comments" ADD CONSTRAINT "comments_parent_comment_id_fkey" FOREIGN KEY (parent_comment_id) REFERENCES comments(id) ON DELETE CASCADE NOT DEFERRABLE;
@@ -1122,4 +1163,4 @@ CREATE VIEW "lock_stats" AS SELECT l.id,
      LEFT JOIN boards b ON ((((((b.settings -> 'permissions'::text) -> 'locks'::text) ->> 'lockIds'::text) IS NOT NULL) AND (jsonb_typeof((((b.settings -> 'permissions'::text) -> 'locks'::text) -> 'lockIds'::text)) = 'array'::text) AND ((((b.settings -> 'permissions'::text) -> 'locks'::text) -> 'lockIds'::text) @> to_jsonb(l.id)))))
   GROUP BY l.id;
 
--- 2025-07-12 19:34:33 UTC
+-- 2025-08-10 09:25:31 UTC

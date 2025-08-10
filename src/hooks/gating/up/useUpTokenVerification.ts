@@ -11,6 +11,11 @@ interface TokenVerificationStatus {
     symbol: string;
     decimals: number;
     iconUrl?: string;
+    // Enhanced classification data
+    displayDecimals?: number;
+    isDivisible?: boolean;
+    tokenType?: 'LSP7' | 'LSP8';
+    classification?: string;
   };
 }
 
@@ -21,7 +26,7 @@ export const useUpTokenVerification = (
   const [verificationStatus, setVerificationStatus] = useState<Record<string, TokenVerificationStatus>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { getTokenBalances } = useUniversalProfile();
+  const { getEnhancedTokenBalances } = useUniversalProfile();
 
   const requirementsKey = JSON.stringify(requirements);
 
@@ -36,9 +41,12 @@ export const useUpTokenVerification = (
       setError(null);
 
       try {
-        // Step 1: Fetch all base metadata first
-        const tokenAddresses = requirements.map(req => req.contractAddress);
-        const metadataArray = await getTokenBalances(tokenAddresses);
+        // Step 1: Fetch enhanced metadata with classification
+        const tokenRequests = requirements.map(req => ({
+          contractAddress: req.contractAddress,
+          tokenType: req.tokenType
+        }));
+        const metadataArray = await getEnhancedTokenBalances(tokenRequests);
         const metadataMap = metadataArray.reduce((acc, meta) => {
           acc[meta.contractAddress.toLowerCase()] = meta;
           return acc;
@@ -94,20 +102,38 @@ export const useUpTokenVerification = (
             newStatus[tokenKey] = {
               isMet: ownsToken,
               currentBalance: ownsToken ? '1' : '0',
-              metadata: metadata ? { ...metadata, name: metadata.name || 'Unknown', symbol: metadata.symbol || '???', decimals: 0 } : undefined,
+              metadata: metadata ? { 
+                name: metadata.name || 'Unknown', 
+                symbol: metadata.symbol || '???', 
+                decimals: 0, // LSP8 tokens always have 0 decimals for display
+                iconUrl: metadata.iconUrl,
+                displayDecimals: 0, // Always 0 for LSP8
+                isDivisible: false, // LSP8 tokens are never divisible
+                tokenType: 'LSP8',
+                classification: metadata.classification || 'LSP8_NFT'
+              } : undefined,
             };
           } else {
             const balance = balanceResults[balanceIndex++];
             const requiredAmount = ethers.BigNumber.from(req.minAmount || '1');
             const isMet = balance ? balance.gte(requiredAmount) : false;
+            
+            // Use enhanced metadata for better formatting
+            const displayDecimals = metadata?.displayDecimals ?? metadata?.decimals ?? 18;
+            const actualDecimals = metadata?.actualDecimals ?? metadata?.decimals ?? 18;
+            
             newStatus[req.contractAddress] = {
               isMet,
               currentBalance: balance ? balance.toString() : '0',
               metadata: metadata ? {
                 name: metadata.name || 'Unknown',
                 symbol: metadata.symbol || '???',
-                decimals: metadata.decimals || 18,
-                iconUrl: metadata.iconUrl
+                decimals: actualDecimals, // Keep actual decimals for backward compatibility
+                iconUrl: metadata.iconUrl,
+                displayDecimals: displayDecimals, // Use proper display decimals
+                isDivisible: metadata.isDivisible ?? true, // Default to divisible if unknown
+                tokenType: metadata.tokenType || 'LSP7',
+                classification: metadata.classification || 'UNKNOWN'
               } : undefined,
             };
           }
@@ -124,7 +150,7 @@ export const useUpTokenVerification = (
     };
 
     verifyAllTokens();
-  }, [address, requirementsKey, getTokenBalances]);
+  }, [address, requirementsKey, getEnhancedTokenBalances]);
 
   return { verificationStatus, isLoading, error };
 }; 
