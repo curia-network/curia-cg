@@ -21,7 +21,6 @@ import { LockCard } from './LockCard';
 import { LockPreviewModal } from './LockPreviewModal';
 import { LockEditModal } from './LockEditModal';
 import { DeleteLockDialog } from './DeleteLockDialog';
-import { RenameLockDialog } from './RenameLockDialog';
 import { useAuth } from '@/contexts/AuthContext';
 import { useLocks, useLockManagement } from '@/hooks/useLockManagement';
 import { toast } from '@/hooks/use-toast';
@@ -61,7 +60,6 @@ export const LockBrowser: React.FC<LockBrowserProps> = ({
   // Dialog States
   const [editDialogLock, setEditDialogLock] = useState<LockWithStats | null>(null);
   const [deleteDialogLock, setDeleteDialogLock] = useState<LockWithStats | null>(null);
-  const [renameDialogLock, setRenameDialogLock] = useState<LockWithStats | null>(null);
   
   // Determine if we're in callback mode or modal mode
   const useCallbackMode = Boolean(onSelectLock);
@@ -90,10 +88,8 @@ export const LockBrowser: React.FC<LockBrowserProps> = ({
 
   // Lock management operations
   const {
-    renameLock,
     deleteLock,
     duplicateLock,
-    isRenaming,
     isDeleting
   } = useLockManagement();
   
@@ -117,27 +113,6 @@ export const LockBrowser: React.FC<LockBrowserProps> = ({
   // Action handlers
   const handleEdit = (lock: LockWithStats) => {
     setEditDialogLock(lock);
-  };
-
-  const handleRename = (lock: LockWithStats) => {
-    setRenameDialogLock(lock);
-  };
-
-  const handleRenameConfirm = async (lock: LockWithStats, newName: string) => {
-    try {
-      await renameLock({ lockId: lock.id, name: newName });
-      toast({
-        title: 'Lock renamed',
-        description: `Lock renamed to "${newName}"`,
-      });
-    } catch (error) {
-      toast({
-        title: 'Failed to rename lock',
-        description: error instanceof Error ? error.message : 'An error occurred',
-        variant: 'destructive',
-      });
-      throw error; // Re-throw to let dialog handle it
-    }
   };
 
   const handleDuplicate = async (lock: LockWithStats) => {
@@ -405,7 +380,6 @@ export const LockBrowser: React.FC<LockBrowserProps> = ({
               variant={viewMode}
               showCreator={filters.filter !== 'mine'}
               onEdit={handleEdit}
-              onRename={handleRename}
               onDuplicate={handleDuplicate}
               onDelete={handleDelete}
             />
@@ -427,7 +401,6 @@ export const LockBrowser: React.FC<LockBrowserProps> = ({
           lock={selectedLock}
           isOpen={isModalOpen}
           onClose={handleCloseModal}
-          onRename={handleRename}
           onDuplicate={handleDuplicate}
           onDelete={handleDelete}
         />
@@ -440,14 +413,6 @@ export const LockBrowser: React.FC<LockBrowserProps> = ({
         onClose={() => setDeleteDialogLock(null)}
         onConfirm={handleDeleteConfirm}
         isDeleting={isDeleting}
-      />
-
-      <RenameLockDialog
-        lock={renameDialogLock}
-        isOpen={!!renameDialogLock}
-        onClose={() => setRenameDialogLock(null)}
-        onConfirm={handleRenameConfirm}
-        isRenaming={isRenaming}
       />
 
       <LockEditModal

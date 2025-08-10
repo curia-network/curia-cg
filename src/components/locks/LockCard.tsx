@@ -36,7 +36,6 @@ interface LockCardProps {
   className?: string;
   // Action handlers (optional)
   onEdit?: (lock: LockWithStats) => void;
-  onRename?: (lock: LockWithStats) => void;
   onDuplicate?: (lock: LockWithStats) => void;
   onDelete?: (lock: LockWithStats) => void;
 }
@@ -49,7 +48,6 @@ export const LockCard: React.FC<LockCardProps> = ({
   showCreator = true,
   className = '',
   onEdit,
-  onRename,
   onDuplicate,
   onDelete
 }) => {
@@ -142,9 +140,15 @@ export const LockCard: React.FC<LockCardProps> = ({
   const categoryTypes = getCategoryTypes();
   const requirementsSummary = getRequirementsSummary();
 
-  // Action menu component (only show if user can edit and handlers provided)
+  // Action menu component with proper permissions
   const ActionMenu = () => {
-    if (!lock.canEdit || (!onRename && !onDuplicate && !onDelete)) {
+    // Determine what actions are available
+    const canEdit = lock.canEdit && onEdit; // Only admins and owners can edit
+    const canDelete = lock.canDelete && onDelete; // Only admins and owners can delete
+    const canDuplicate = onDuplicate; // Any authenticated user can duplicate
+    
+    // Show menu if any action is available
+    if (!canEdit && !canDelete && !canDuplicate) {
       return null;
     }
 
@@ -161,25 +165,19 @@ export const LockCard: React.FC<LockCardProps> = ({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-          {onEdit && (
+          {canEdit && (
             <DropdownMenuItem onClick={() => onEdit(lock)}>
               <Edit2 className="h-4 w-4 mr-2" />
               Edit Lock
             </DropdownMenuItem>
           )}
-          {onRename && (
-            <DropdownMenuItem onClick={() => onRename(lock)}>
-              <Edit2 className="h-4 w-4 mr-2" />
-              Rename
-            </DropdownMenuItem>
-          )}
-          {onDuplicate && (
+          {canDuplicate && (
             <DropdownMenuItem onClick={() => onDuplicate(lock)}>
               <Copy className="h-4 w-4 mr-2" />
               Duplicate
             </DropdownMenuItem>
           )}
-          {onDelete && lock.canDelete && (
+          {canDelete && (
             <DropdownMenuItem 
               onClick={() => onDelete(lock)}
               className="text-destructive focus:text-destructive"

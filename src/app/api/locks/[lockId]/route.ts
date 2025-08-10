@@ -30,7 +30,10 @@ interface LockRow {
 }
 
 // Transform database row to API Lock object
-function transformLockRow(row: LockRow, currentUserId?: string): LockWithStats {
+function transformLockRow(row: LockRow, currentUserId?: string, isAdmin?: boolean): LockWithStats {
+  const isOwner = row.creator_user_id === currentUserId;
+  const canEditOrDelete = isOwner || (isAdmin === true); // Admins and owners can edit/delete
+  
   return {
     id: row.id,
     name: row.name,
@@ -52,9 +55,9 @@ function transformLockRow(row: LockRow, currentUserId?: string): LockWithStats {
     updatedAt: row.updated_at,
     // Computed properties
     postsUsingLock: row.posts_using_lock || 0,
-    isOwned: row.creator_user_id === currentUserId,
-    canEdit: row.creator_user_id === currentUserId, // Can be expanded with admin logic
-    canDelete: row.creator_user_id === currentUserId
+    isOwned: isOwner,
+    canEdit: canEditOrDelete, // Admins and owners can edit
+    canDelete: canEditOrDelete // Admins and owners can delete
   };
 }
 
@@ -170,7 +173,7 @@ async function getLockHandler(req: AuthenticatedRequest, context: RouteContext) 
       return NextResponse.json({ error: 'You do not have permission to view this lock' }, { status: 403 });
     }
     
-    const lock = transformLockRow(lockData, currentUserId);
+    const lock = transformLockRow(lockData, currentUserId, isAdmin);
     
     console.log(`[API GET /api/locks/${lockId}] Successfully retrieved lock "${lock.name}" for user ${currentUserId}`);
     
@@ -322,7 +325,7 @@ async function updateLockHandler(req: AuthenticatedRequest, context: RouteContex
     `;
     
     const result = await query(updateQuery, updateParams);
-    const updatedLock = transformLockRow(result.rows[0], currentUserId);
+    const updatedLock = transformLockRow(result.rows[0], currentUserId, isAdmin);
     
     console.log(`[API PUT /api/locks/${lockId}] Lock updated: "${updatedLock.name}" by user ${currentUserId}`);
     
