@@ -25,14 +25,17 @@ import {
   XCircle, 
   AlertTriangle, 
   Loader2,
-  Wallet
+  Wallet,
+  ShoppingCart
 } from 'lucide-react';
 import { ethers } from 'ethers';
 
-import { UPGatingRequirements, VerificationStatus } from '@/types/gating';
+import { UPGatingRequirements, VerificationStatus, TokenRequirement } from '@/types/gating';
 import { lsp26Registry } from '@/lib/lsp26';
 import { useUPSocialProfiles } from '@/hooks/useUPSocialProfiles';
 import { useLuksoTokenMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
+import { getTokenPrimaryMarketplaceUrl } from '@/lib/lukso/tokenMarketplaceIntegration';
+import { useCgLib } from '@/contexts/CgLibContext';
 
 // ===== TYPES =====
 
@@ -592,7 +595,13 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
                         </div>
                       </div>
                     </div>
-                    <div className="flex items-center">
+                    <div className="flex items-center gap-2">
+                      {/* Marketplace button - only show if requirement is NOT met */}
+                      <RichMarketplaceButton 
+                        tokenRequirement={tokenReq} 
+                        requirementMet={requirementMet}
+                        userConnected={userStatus.connected}
+                      />
                       {getStatusIcon(tokenData?.isLoading, requirementMet, tokenData?.error)}
                     </div>
                   </div>
@@ -839,5 +848,62 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
         )}
       </CardContent>
     </Card>
+  );
+};
+
+// ===== MARKETPLACE BUTTON COMPONENT =====
+
+interface RichMarketplaceButtonProps {
+  tokenRequirement: TokenRequirement;
+  requirementMet: boolean;
+  userConnected: boolean;
+}
+
+const RichMarketplaceButton: React.FC<RichMarketplaceButtonProps> = ({ 
+  tokenRequirement, 
+  requirementMet, 
+  userConnected 
+}) => {
+  const { cgInstance } = useCgLib();
+
+  // Only show button if user is connected AND requirement is NOT met
+  if (!userConnected || requirementMet) {
+    return null;
+  }
+
+  const handleMarketplaceClick = async () => {
+    try {
+      // Get marketplace URL (with smart fallback for legacy tokens)
+      const primaryUrl = getTokenPrimaryMarketplaceUrl(tokenRequirement);
+      
+      if (!primaryUrl) {
+        console.warn('[RichMarketplaceButton] No marketplace URL available for token:', tokenRequirement.contractAddress);
+        return;
+      }
+
+      // Use CG navigation if available (sandboxed environment)
+      if (cgInstance?.navigate) {
+        console.log('[RichMarketplaceButton] Navigating via CG to:', primaryUrl);
+        await cgInstance.navigate(primaryUrl);
+      } else {
+        console.log('[RichMarketplaceButton] CG navigation not available, using window.open for:', primaryUrl);
+        window.open(primaryUrl, '_blank', 'noopener,noreferrer');
+      }
+    } catch (error) {
+      console.error('[RichMarketplaceButton] Error opening marketplace link:', error);
+    }
+  };
+
+  return (
+    <Button 
+      variant="outline" 
+      size="sm" 
+      onClick={handleMarketplaceClick}
+      className="h-7 px-2 text-xs hover:bg-accent/20"
+      title={`Get ${tokenRequirement.symbol || 'this token'}`}
+    >
+      <ShoppingCart className="h-3 w-3 mr-1" />
+      Get
+    </Button>
   );
 }; 

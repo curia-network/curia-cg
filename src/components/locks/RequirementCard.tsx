@@ -12,12 +12,16 @@ import {
   Users,
   UserCheck,
   Wallet,
-  Globe
+  Globe,
+  ShoppingCart
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 import { GatingRequirement } from '@/types/locks';
 import { UPTokenMetadata, UPSocialProfile } from '@/lib/upProfile';
+import { getTokenPrimaryMarketplaceUrl } from '@/lib/lukso/tokenMarketplaceIntegration';
+import { TokenRequirement } from '@/types/gating';
+import { useCgLib } from '@/contexts/CgLibContext';
 
 interface RequirementCardProps {
   requirement: GatingRequirement;
@@ -174,6 +178,8 @@ export const RequirementCard: React.FC<RequirementCardProps> = ({
         </div>
         
         <div className="flex items-center gap-2">
+          {/* Marketplace button for token requirements */}
+          <MarketplaceButton requirement={requirement} />
           {onEdit && (
             <Button variant="ghost" size="sm" onClick={handleEdit} className="h-8 w-8 p-0">
               <Edit3 className="h-4 w-4" />
@@ -329,5 +335,69 @@ export const RequirementCard: React.FC<RequirementCardProps> = ({
         )}
       </div>
     </div>
+  );
+};
+
+// ===== MARKETPLACE BUTTON COMPONENT =====
+
+interface MarketplaceButtonProps {
+  requirement: GatingRequirement;
+}
+
+const MarketplaceButton: React.FC<MarketplaceButtonProps> = ({ requirement }) => {
+  const { cgInstance } = useCgLib();
+
+  // Only show for token requirements
+  if (requirement.type !== 'lsp7_token' && requirement.type !== 'lsp8_nft') {
+    return null;
+  }
+
+  const handleMarketplaceClick = async () => {
+    try {
+      // Convert GatingRequirement to TokenRequirement format
+      const config = requirement.config as any; // eslint-disable-line @typescript-eslint/no-explicit-any
+      const tokenRequirement: TokenRequirement = {
+        contractAddress: config.contractAddress,
+        tokenType: requirement.type === 'lsp7_token' ? 'LSP7' : 'LSP8',
+        name: config.name,
+        symbol: config.symbol,
+        decimals: config.decimals,
+        minAmount: config.minAmount,
+        tokenId: config.tokenId,
+        marketplaceLinks: config.marketplaceLinks
+      };
+
+      // Get marketplace URL (with smart fallback)
+      const primaryUrl = getTokenPrimaryMarketplaceUrl(tokenRequirement);
+      
+      if (!primaryUrl) {
+        console.warn('[MarketplaceButton] No marketplace URL available for token:', config.contractAddress);
+        return;
+      }
+
+      // Use CG navigation if available (sandboxed environment)
+      if (cgInstance?.navigate) {
+        console.log('[MarketplaceButton] Navigating via CG to:', primaryUrl);
+        await cgInstance.navigate(primaryUrl);
+      } else {
+        console.log('[MarketplaceButton] CG navigation not available, using window.open for:', primaryUrl);
+        window.open(primaryUrl, '_blank', 'noopener,noreferrer');
+      }
+    } catch (error) {
+      console.error('[MarketplaceButton] Error opening marketplace link:', error);
+    }
+  };
+
+  return (
+    <Button 
+      variant="outline" 
+      size="sm" 
+      onClick={handleMarketplaceClick}
+      className="h-8 px-2 text-xs"
+      title="Get this token"
+    >
+      <ShoppingCart className="h-3 w-3 mr-1" />
+      Get
+    </Button>
   );
 };
