@@ -24,6 +24,7 @@ import {
   CheckCircle, 
   XCircle, 
   AlertTriangle, 
+  AlertCircle,
   Loader2,
   Wallet,
   ShoppingCart
@@ -31,7 +32,7 @@ import {
 import { ethers } from 'ethers';
 
 import { UPGatingRequirements, VerificationStatus, TokenRequirement } from '@/types/gating';
-import { lsp26Registry } from '@/lib/lsp26';
+import { lsp26Registry, getFollowingStatus } from '@/lib/lsp26';
 import { useUPSocialProfiles } from '@/hooks/useUPSocialProfiles';
 import { useLuksoTokenMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
 import { getTokenPrimaryMarketplaceUrl } from '@/lib/lukso/tokenMarketplaceIntegration';
@@ -155,18 +156,75 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
     followerVerifications: {},
   });
 
+  // ===== FOLLOWING STATUS FETCHING =====
+  const fetchFollowingStatus = useCallback(async () => {
+    if (!userStatus.connected || !userStatus.address) return;
+    if (requirements.followerRequirements == null || requirements.followerRequirements.length === 0) return;
+
+    const followingReqs = requirements.followerRequirements.filter(r => r.type === 'following');
+    if (followingReqs.length === 0) return;
+
+    console.log('[RichRequirementsDisplay] 🔄 Fetching following status for requirements:', followingReqs);
+
+    try {
+      const results = await Promise.all(
+        followingReqs.map(async (req) => {
+          const isFollowing = await getFollowingStatus(userStatus.address!, req.value);
+          console.log(`[RichRequirementsDisplay] Following status: ${userStatus.address} → ${req.value} = ${isFollowing}`);
+          return { req, isFollowing };
+        })
+      );
+
+      setFollowerState(prev => {
+        const updatedFollowerVerifications = { ...prev.followerVerifications };
+        let hasChanges = false;
+        
+        results.forEach(({ req, isFollowing }) => {
+          const key = `${req.type}-${req.value}`;
+          const existing = updatedFollowerVerifications[key];
+          if (!existing || existing.status !== isFollowing) {
+            hasChanges = true;
+            updatedFollowerVerifications[key] = {
+              type: req.type,
+              value: req.value,
+              status: isFollowing,
+              isLoading: false,
+            };
+          }
+        });
+        
+        if (!hasChanges) return prev; // Avoid unnecessary state updates
+        return {
+          ...prev,
+          followerVerifications: updatedFollowerVerifications,
+        };
+      });
+    } catch (err) {
+      console.error('[RichRequirementsDisplay] Failed to fetch following status', err);
+    }
+  }, [userStatus.connected, userStatus.address, requirements.followerRequirements]);
+
+  useEffect(() => {
+    fetchFollowingStatus();
+  }, [fetchFollowingStatus]);
+
   // ===== VERIFICATION REFRESH HANDLER =====
   
   const refreshFollowerVerification = useCallback(() => {
-    console.log('[RichRequirementsDisplay] Refreshing follower verification after follow action');
+    console.log('[RichRequirementsDisplay] 🔄 FORCING follower verification refresh after follow action');
     
-    // Clear follower state to trigger re-verification
+    // Clear follower state immediately
     setFollowerState({
       followerVerifications: {},
     });
     
-    // The useEffect below will automatically re-run verification
-  }, []);
+    // Direct call to fetch function after delay to ensure follow propagation
+    setTimeout(() => {
+      console.log('[RichRequirementsDisplay] 🔄 Directly calling fetchFollowingStatus');
+      fetchFollowingStatus(); // Direct call - no dependency on useEffect!
+    }, 1000); // 1 second delay to ensure the follow has propagated on LUKSO
+    
+  }, [fetchFollowingStatus]);
 
   // ===== FOLLOWER COUNT FETCHING =====
   const followerReqString = JSON.stringify(requirements.followerRequirements ?? []);
@@ -953,7 +1011,14 @@ const FollowButton: React.FC<FollowButtonProps> = ({
 }) => {
   const { provider } = useUniversalProfile();
   
-  const { handleFollow, isFollowPending, followError, clearError } = useFollowAction({
+  const { 
+    handleFollow, 
+    isFollowPending, 
+    followError, 
+    followStatus, 
+    pollProgress, 
+    clearError 
+  } = useFollowAction({
     targetAddress,
     targetName,
     onSuccess
@@ -973,28 +1038,59 @@ const FollowButton: React.FC<FollowButtonProps> = ({
     }
   };
 
+  // Enhanced button content based on status
+  const getButtonContent = () => {
+    switch (followStatus) {
+      case 'confirming':
+        return <><Loader2 className="h-3 w-3 mr-1 animate-spin" />Confirming...</>;
+      case 'polling':
+        const progressPercent = Math.round((pollProgress.current / pollProgress.total) * 100);
+        return <><Loader2 className="h-3 w-3 mr-1 animate-spin" />Following... {progressPercent}%</>;
+      case 'success':
+        return <><CheckCircle className="h-3 w-3 mr-1 text-green-500" />Followed!</>;
+      case 'timeout':
+        return <><AlertCircle className="h-3 w-3 mr-1 text-orange-500" />Timeout</>;
+      default:
+        return <><UserCheck className="h-3 w-3 mr-1" />Follow</>;
+    }
+  };
+
+  const getStatusMessage = () => {
+    switch (followStatus) {
+      case 'confirming':
+        return 'Confirm transaction in wallet...';
+      case 'polling':
+        return `Checking follow status... (${pollProgress.current}/${pollProgress.total})`;
+      case 'success':
+        return 'Successfully followed!';
+      case 'timeout':
+        return 'Taking longer than expected. Try refreshing.';
+      default:
+        return null;
+    }
+  };
+
+  const statusMessage = getStatusMessage();
+
   return (
     <div className="flex flex-col items-end">
       <Button 
         variant="outline" 
         size="sm" 
         onClick={handleFollowClick}
-        disabled={isFollowPending || !provider}
+        disabled={isFollowPending || !provider || followStatus === 'success'}
         className="h-7 px-2 text-xs hover:bg-blue-50 hover:border-blue-300 dark:hover:bg-blue-900/20"
         title={`Follow ${targetName || 'this profile'}`}
       >
-        {isFollowPending ? (
-          <>
-            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            Following...
-          </>
-        ) : (
-          <>
-            <UserCheck className="h-3 w-3 mr-1" />
-            Follow
-          </>
-        )}
+        {getButtonContent()}
       </Button>
+      
+      {/* Status Message */}
+      {statusMessage && (
+        <div className="mt-1 text-xs text-muted-foreground max-w-[140px] text-right">
+          {statusMessage}
+        </div>
+      )}
       
       {/* Error Display */}
       {followError && (
