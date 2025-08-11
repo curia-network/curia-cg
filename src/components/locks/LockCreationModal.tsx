@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { LockCreationStepper } from './LockCreationStepper';
 import { LockBuilderProvider, useLockBuilder } from './LockBuilderProvider';
-import { LockBuilderStep, LockBuilderState } from '@/types/locks';
+import { LockBuilderStep, LockBuilderState, type GatingRequirement } from '@/types/locks';
 import { LockTemplateSelector } from './LockTemplateSelector';
 import { LockTemplate } from '@/types/templates';
 import { GatingRequirementsPreview } from './GatingRequirementsPreview';
@@ -28,7 +28,7 @@ import { CSVUploadComponent } from './csv/CSVUploadComponent';
 
 // Step content components
 const MetadataStep = () => {
-  const { state, setState } = useLockBuilder();
+  const { state, setState, addRequirement, setStep } = useLockBuilder();
   
   const handleSelectTemplate = useCallback((template: LockTemplate) => {
     setState((prev: LockBuilderState) => ({
@@ -70,12 +70,32 @@ const MetadataStep = () => {
       showCSVUpload: false
     }));
   }, [setState]);
+
+  const handleCSVImport = useCallback((requirements: GatingRequirement[]) => {
+    console.log('[LockCreationModal] Importing CSV requirements:', requirements);
+    
+    // Add all imported requirements to the lock builder state
+    requirements.forEach(requirement => {
+      addRequirement(requirement);
+    });
+    
+    // Navigate to requirements step and hide CSV upload
+    setState((prev: LockBuilderState) => ({
+      ...prev,
+      showCSVUpload: false,
+      currentScreen: 'requirements'
+    }));
+    
+    // Move to requirements step
+    setStep('requirements');
+  }, [addRequirement, setState, setStep]);
   
   // Show CSV upload component if showCSVUpload is true
   if (state.showCSVUpload) {
     return (
       <CSVUploadComponent
         onCancel={handleCSVUploadCancel}
+        onImport={handleCSVImport}
       />
     );
   }

@@ -5,9 +5,11 @@ import { Button } from '@/components/ui/button';
 import { ArrowLeft, Upload, CheckCircle, AlertCircle, FileText } from 'lucide-react';
 import Papa from 'papaparse';
 import { useLuksoTokenMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
+import type { GatingRequirement } from '@/types/locks';
 
 interface CSVUploadComponentProps {
   onCancel: () => void;
+  onImport: (requirements: GatingRequirement[]) => void;
 }
 
 interface CSVRow {
@@ -36,7 +38,8 @@ interface EnrichedValidationResult extends ValidationResult {
 }
 
 export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
-  onCancel
+  onCancel,
+  onImport
 }) => {
   const [file, setFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -100,6 +103,66 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
       } : null);
     }
   }, [isLoadingMetadata, tokenAddresses.length, validationResult?.validRows.length]);
+
+  // Convert enriched CSV rows to GatingRequirement objects
+  const convertToGatingRequirements = useCallback((enrichedRows: EnrichedValidationResult['enrichedRows']): GatingRequirement[] => {
+    return enrichedRows.map((row, index) => {
+      const id = `csv-import-${Date.now()}-${index}`;
+      
+      if (row.requirement_type === 'lsp7_token') {
+        return {
+          id,
+          type: 'lsp7_token' as const,
+          category: 'token' as const,
+          config: {
+            contractAddress: row.contract_address,
+            minAmount: row.min_amount,
+            name: row.tokenName || 'Unknown Token',
+            symbol: row.tokenSymbol || 'UNK',
+            decimals: row.tokenDecimals ?? 18
+          },
+          isValid: true,
+          displayName: row.isTokenFound 
+            ? `${row.tokenName} (${row.tokenSymbol})` 
+            : row.contract_address
+        };
+      } else if (row.requirement_type === 'lsp8_nft') {
+        return {
+          id,
+          type: 'lsp8_nft' as const,
+          category: 'token' as const,
+          config: {
+            contractAddress: row.contract_address,
+            minAmount: row.min_amount,
+            name: row.tokenName || 'Unknown Collection',
+            symbol: row.tokenSymbol || 'UNK'
+          },
+          isValid: true,
+          displayName: row.isTokenFound 
+            ? `${row.tokenName} Collection` 
+            : row.contract_address
+        };
+      }
+      
+      // This shouldn't happen due to validation, but provide fallback
+      throw new Error(`Unsupported requirement type: ${row.requirement_type}`);
+    });
+  }, []);
+
+  // Handle import button click
+  const handleImport = useCallback(() => {
+    if (!validationResult?.enrichedRows || validationResult.enrichedRows.length === 0) {
+      return;
+    }
+    
+    try {
+      const requirements = convertToGatingRequirements(validationResult.enrichedRows);
+      console.log('[CSV Upload] Importing requirements:', requirements);
+      onImport(requirements);
+    } catch (error) {
+      console.error('[CSV Upload] Failed to convert requirements:', error);
+    }
+  }, [validationResult?.enrichedRows, convertToGatingRequirements, onImport]);
 
   // Validate CSV row format
   const validateCSVRow = useCallback((row: any, rowIndex: number): { isValid: boolean; errors: string[] } => {
@@ -499,11 +562,8 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
               
               {validationResult?.isValid && (
                 <Button
-                  onClick={() => {
-                    // TODO: Proceed to import tokens
-                    console.log('[CSV Upload] Proceeding with import:', validationResult.validRows);
-                  }}
-                  disabled={isProcessing}
+                  onClick={handleImport}
+                  disabled={isProcessing || validationResult?.isEnriching}
                 >
                   Import {validationResult.validRows.length} Token(s) →
                 </Button>
