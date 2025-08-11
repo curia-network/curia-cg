@@ -747,6 +747,9 @@ const LockCreationModalContent: React.FC<LockCreationModalContentProps> = ({
   const canGoNext = currentStepIndex < STEP_ORDER.length - 1;
   const canGoPrevious = currentStepIndex > 0;
   const isLastStep = currentStepIndex === STEP_ORDER.length - 1;
+  
+  // Check if CSV upload is currently showing (hide Next button to avoid confusion)
+  const isCSVUploadActive = state.step === 'metadata' && state.showCSVUpload;
 
   // Check if current step is complete (placeholder logic for now)
   const isStepComplete = (step: LockBuilderStep): boolean => {
@@ -1064,7 +1067,7 @@ const LockCreationModalContent: React.FC<LockCreationModalContentProps> = ({
                 )}
                 Save Lock
               </Button>
-            ) : (
+            ) : !isCSVUploadActive ? (
               <Button 
                 onClick={handleNext}
                 disabled={!canGoNext}
@@ -1074,7 +1077,7 @@ const LockCreationModalContent: React.FC<LockCreationModalContentProps> = ({
                 Next
                 <ArrowRight className="h-4 w-4 ml-2" />
               </Button>
-            )}
+            ) : null}
           </div>
         </div>
       </div>
