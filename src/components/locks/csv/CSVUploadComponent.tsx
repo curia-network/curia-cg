@@ -33,6 +33,8 @@ interface EnrichedValidationResult extends ValidationResult {
     tokenName?: string;
     tokenSymbol?: string;
     tokenDecimals?: number;
+    tokenIsDivisible?: boolean;
+    tokenLsp4TokenType?: number;
     profileName?: string;
     profileImage?: string;
     isTokenFound: boolean;
@@ -99,6 +101,8 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
           tokenName: metadata?.name || undefined,
           tokenSymbol: metadata?.symbol || undefined,
           tokenDecimals: metadata?.decimals, // Don't use || because 0 is a valid decimal value
+          tokenIsDivisible: metadata?.isDivisible,
+          tokenLsp4TokenType: metadata?.lsp4TokenType,
           isTokenFound: !!metadata
         };
       } else if (['must_follow', 'must_be_followed_by'].includes(row.requirement_type)) {
@@ -151,8 +155,14 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
       const id = `csv-import-${Date.now()}-${index}`;
       
       if (row.requirement_type === 'lsp7_token') {
-        // Generate marketplace links for LSP7 token
-        const marketplaceLinks = generateMarketplaceLinksForCSV('LSP7', row.contract_address);
+        // Generate marketplace links for LSP7 token with correct routing
+        const marketplaceLinks = generateMarketplaceLinksForCSV(
+          'LSP7', 
+          row.contract_address,
+          undefined, // tokenId - not applicable for LSP7
+          row.tokenIsDivisible, // Use GraphQL isDivisible for fallback routing
+          row.tokenLsp4TokenType // Use GraphQL lsp4TokenType for primary routing
+        );
 
         return {
           id,

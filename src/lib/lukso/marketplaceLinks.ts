@@ -33,6 +33,8 @@ export interface TokenMetadata {
   standard: TokenStandard;
   address: string;                     // Contract address on LUKSO mainnet
   tokenId?: string | number | bigint;  // For LSP8 items (decimal, hex, or string)
+  isDivisible?: boolean;               // For LSP7 routing decision (false = Universal.page, true = UniversalSwaps)
+  lsp4TokenType?: number;              // LSP4 token type (0=Token, 1=NFT, 2=Collection)
 }
 
 // Input compatible with our lock creation modal token requirements
@@ -63,7 +65,7 @@ export function generateMarketplaceLinks(metadata: TokenMetadata): TokenMarketpl
   const addr = ethers.utils.getAddress(metadata.address);
 
   if (metadata.standard === 'LSP7') {
-    return generateLSP7Links(addr);
+    return generateLSP7Links(addr, metadata.isDivisible, metadata.lsp4TokenType);
   } else {
     return generateLSP8Links(addr, metadata.tokenId);
   }
@@ -100,14 +102,75 @@ export function getMarketplaceLinksFromRequirement(requirement: TokenRequirement
 // ===== LSP7 MARKETPLACE INTEGRATION =====
 
 /**
- * Generate LSP7 marketplace links (UniversalSwaps)
+ * Generate LSP7 marketplace links with smart routing based on token properties
+ * 
+ * Routing Logic (based on LUKSO docs):
+ * - LSP4TokenType=0 → UniversalSwaps (fungible token, regardless of decimals 18 or 0)
+ * - LSP4TokenType=1 → Universal.page (NFT type)
+ * - If LSP4TokenType unknown → fallback to decimals check (isDivisible=false → Universal.page)
+ * 
+ * @param checksumAddress - Contract address
+ * @param isDivisible - Whether token is divisible (fallback routing if lsp4TokenType unknown)
+ * @param lsp4TokenType - LSP4 token type (0=Token→USWAPS, 1=NFT→Universal.page)
  */
-function generateLSP7Links(checksumAddress: string): TokenMarketplaceLinks {
+function generateLSP7Links(
+  checksumAddress: string, 
+  isDivisible?: boolean, 
+  lsp4TokenType?: number
+): TokenMarketplaceLinks {
+  
+  // Primary routing: Use LSP4TokenType if available
+  if (lsp4TokenType !== undefined) {
+    if (lsp4TokenType === 1) {
+      // LSP4TokenType=1 → Universal.page (NFT)
+      console.log(`[MarketplaceLinks] Routing LSP7 ${checksumAddress} to Universal.page (lsp4TokenType=1, NFT)`);
+      const collection = `${UNIVERSAL_PAGE_BASE}/collections/lukso/${checksumAddress}`;
+      const viewer = `${UNIVERSAL_EVERYTHING_BASE}/asset/${checksumAddress}`;
+      
+      return {
+        primary: collection,  // Collection page is primary for NFT-like tokens
+        collection,
+        viewer
+      };
+    } else {
+      // LSP4TokenType=0 → UniversalSwaps (Token, regardless of decimals)
+      console.log(`[MarketplaceLinks] Routing LSP7 ${checksumAddress} to UniversalSwaps (lsp4TokenType=0, Token)`);
+      const trade = `${UNIVERSAL_SWAPS_BASE}/tokens/lukso/${checksumAddress}`;
+      const info = `${UNIVERSAL_SWAPS_INFO_BASE}/#/tokens/${checksumAddress}`;
+      
+      return {
+        primary: trade,  // Trade page is primary for fungible tokens
+        trade,
+        info
+      };
+    }
+  }
+  
+  // Fallback routing: Use isDivisible if LSP4TokenType not available
+  const shouldRouteToUniversalPage = isDivisible === false;
+  
+  if (shouldRouteToUniversalPage) {
+    console.log(`[MarketplaceLinks] Routing LSP7 ${checksumAddress} to Universal.page (lsp4TokenType=${lsp4TokenType}, isDivisible=${isDivisible})`);
+    
+    // Use LSP8-style collection URL for non-divisible LSP7s
+    const collection = `${UNIVERSAL_PAGE_BASE}/collections/lukso/${checksumAddress}`;
+    const viewer = `${UNIVERSAL_EVERYTHING_BASE}/asset/${checksumAddress}`;
+    
+    return {
+      primary: collection,  // Collection page is primary for NFT-like tokens
+      collection,
+      viewer
+    };
+  }
+  
+  // Default: Route to UniversalSwaps (fungible token DEX)
+  console.log(`[MarketplaceLinks] Routing LSP7 ${checksumAddress} to UniversalSwaps (lsp4TokenType=${lsp4TokenType}, isDivisible=${isDivisible})`);
+  
   const trade = `${UNIVERSAL_SWAPS_BASE}/tokens/lukso/${checksumAddress}`;
   const info = `${UNIVERSAL_SWAPS_INFO_BASE}/#/tokens/${checksumAddress}`;
   
   return {
-    primary: trade,  // Trade page is primary for LSP7
+    primary: trade,  // Trade page is primary for fungible tokens
     trade,
     info
   };

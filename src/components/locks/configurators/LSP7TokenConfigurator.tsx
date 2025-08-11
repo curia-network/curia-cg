@@ -132,13 +132,20 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
     // Auto-generate marketplace URL when valid address is entered
     if (addressValidation.isValid && !customMarketplaceUrl) {
       try {
-        const marketplaceLinks = generateMarketplaceLinksForCSV('LSP7', contractAddress);
+        // Pass LSP4TokenType and isDivisible for correct routing
+        const marketplaceLinks = generateMarketplaceLinksForCSV(
+          'LSP7', 
+          contractAddress,
+          undefined, // tokenId - not applicable for LSP7
+          tokenData?.isDivisible, // Use GraphQL isDivisible for fallback routing
+          tokenData?.lsp4TokenType // Use GraphQL lsp4TokenType for primary routing
+        );
         setCustomMarketplaceUrl(marketplaceLinks.primary || '');
       } catch (error) {
         console.warn('[LSP7 Configurator] Failed to generate marketplace URL:', error);
       }
     }
-  }, [addressValidation.isValid, contractAddress, customMarketplaceUrl]);
+  }, [addressValidation.isValid, contractAddress, customMarketplaceUrl, tokenData?.isDivisible, tokenData?.lsp4TokenType]);
 
   // ===== VALIDATION =====
   
@@ -224,10 +231,13 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
         }
       }
       
-      // Generate marketplace links for the token
+      // Generate marketplace links for the token with correct routing data
       const baseMarketplaceLinks = generateMarketplaceLinksForCSV(
         'LSP7',
-        contractAddress.trim()
+        contractAddress.trim(),
+        undefined, // tokenId - not applicable for LSP7
+        tokenData?.isDivisible, // Use GraphQL isDivisible for fallback routing
+        tokenData?.lsp4TokenType // Use GraphQL lsp4TokenType for primary routing
       );
 
       // If user has custom URL, override the primary URL

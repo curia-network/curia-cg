@@ -36,7 +36,11 @@ export function getTokenMarketplaceLinks(requirement: TokenRequirement): TokenMa
     const utilityLinks = generateMarketplaceLinks({
       standard: requirement.tokenType,
       address: requirement.contractAddress,
-      tokenId: requirement.tokenId
+      tokenId: requirement.tokenId,
+      // For legacy tokens, try to use stored classification data if available
+      isDivisible: requirement.tokenType === 'LSP7' ? 
+        (requirement.decimals === 0 ? false : undefined) : undefined,
+      lsp4TokenType: undefined // Not available for legacy tokens
     });
     
     // Convert utility format to our interface format
@@ -214,17 +218,23 @@ function createFallbackMarketplaceLinks(requirement: TokenRequirement): TokenMar
  * @param tokenType - LSP7 or LSP8
  * @param contractAddress - Token contract address
  * @param tokenId - Optional token ID for LSP8
+ * @param isDivisible - For LSP7 routing (false = Universal.page, true = UniversalSwaps)
+ * @param lsp4TokenType - LSP4 token type (1 = NFT, routes to Universal.page)
  * @returns TokenMarketplaceLinks for CSV import
  */
 export function generateMarketplaceLinksForCSV(
   tokenType: 'LSP7' | 'LSP8',
   contractAddress: string,
-  tokenId?: string
+  tokenId?: string,
+  isDivisible?: boolean,
+  lsp4TokenType?: number
 ): TokenMarketplaceLinks {
   const utilityLinks = generateMarketplaceLinks({
     standard: tokenType,
     address: contractAddress,
-    tokenId
+    tokenId,
+    isDivisible,
+    lsp4TokenType
   });
   
   return convertUtilityLinksToTokenLinks(utilityLinks);
