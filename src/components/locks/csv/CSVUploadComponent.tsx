@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Upload, CheckCircle, AlertCircle, FileText } from 'lucide-react';
 import Papa from 'papaparse';
+import { useLuksoTokenMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
 
 interface CSVUploadComponentProps {
   onCancel: () => void;
@@ -24,13 +25,81 @@ interface ValidationResult {
   warnings: string[];
 }
 
+interface EnrichedValidationResult extends ValidationResult {
+  enrichedRows: Array<CSVRow & {
+    tokenName?: string;
+    tokenSymbol?: string;
+    tokenDecimals?: number;
+    isTokenFound: boolean;
+  }>;
+  isEnriching: boolean;
+}
+
 export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
   onCancel
 }) => {
   const [file, setFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [validationResult, setValidationResult] = useState<EnrichedValidationResult | null>(null);
   const [dragActive, setDragActive] = useState(false);
+
+  // Extract token addresses for GraphQL fetching
+  const tokenAddresses = validationResult?.validRows.map(row => row.contract_address) || [];
+  
+  // Fetch GraphQL metadata for validated tokens
+  const { data: tokenMetadataResponse, isLoading: isLoadingMetadata } = useLuksoTokenMetadata(
+    tokenAddresses,
+    { 
+      includeIcons: true, 
+      enabled: tokenAddresses.length > 0 
+    }
+  );
+
+  // Enrich validation results with GraphQL metadata
+  useEffect(() => {
+    if (!validationResult || !tokenMetadataResponse || isLoadingMetadata) return;
+
+    console.log('[CSV Upload] Enriching with GraphQL metadata:', tokenMetadataResponse);
+
+    const tokenMetadata = tokenMetadataResponse.data?.tokens || {};
+    const enrichedRows = validationResult.validRows.map(row => {
+      const metadata = tokenMetadata[row.contract_address.toLowerCase()] as LuksoTokenMetadata | undefined;
+      
+      return {
+        ...row,
+        tokenName: metadata?.name || undefined,
+        tokenSymbol: metadata?.symbol || undefined,
+        tokenDecimals: metadata?.decimals || undefined,
+        isTokenFound: !!metadata
+      };
+    });
+
+    // Count missing tokens for warnings
+    const missingTokens = enrichedRows.filter(row => !row.isTokenFound);
+    const newWarnings = [...validationResult.warnings];
+    
+    if (missingTokens.length > 0) {
+      newWarnings.push(`${missingTokens.length} token(s) not found in LUKSO indexer - names will show as addresses`);
+    }
+
+    setValidationResult(prev => prev ? {
+      ...prev,
+      enrichedRows,
+      isEnriching: false,
+      warnings: newWarnings
+    } : null);
+  }, [tokenMetadataResponse, isLoadingMetadata, validationResult?.validRows]);
+
+  // Update enriching state when metadata starts loading
+  useEffect(() => {
+    if (validationResult && tokenAddresses.length > 0) {
+      setValidationResult(prev => prev ? {
+        ...prev,
+        isEnriching: isLoadingMetadata,
+        enrichedRows: prev.enrichedRows || []
+      } : null);
+    }
+  }, [isLoadingMetadata, tokenAddresses.length, validationResult?.validRows.length]);
 
   // Validate CSV row format
   const validateCSVRow = useCallback((row: any, rowIndex: number): { isValid: boolean; errors: string[] } => {
@@ -147,11 +216,13 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
           }
         }
         
-        const validationResult: ValidationResult = {
+        const validationResult: EnrichedValidationResult = {
           isValid: validRows.length > 0 && allErrors.length === 0,
           validRows,
           errors: allErrors,
-          warnings
+          warnings,
+          enrichedRows: [],
+          isEnriching: validRows.length > 0 // Will start enriching if we have valid rows
         };
         
         setValidationResult(validationResult);
@@ -165,7 +236,9 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
           isValid: false,
           validRows: [],
           errors: [`Failed to parse CSV: ${error.message}`],
-          warnings: []
+          warnings: [],
+          enrichedRows: [],
+          isEnriching: false
         });
         setIsProcessing(false);
       }
@@ -179,7 +252,9 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
         isValid: false,
         validRows: [],
         errors: ['Please select a CSV file (.csv)'],
-        warnings: []
+        warnings: [],
+        enrichedRows: [],
+        isEnriching: false
       });
       return;
     }
@@ -189,7 +264,9 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
         isValid: false,
         validRows: [],
         errors: ['File size exceeds 10MB limit'],
-        warnings: []
+        warnings: [],
+        enrichedRows: [],
+        isEnriching: false
       });
       return;
     }
@@ -306,8 +383,10 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
                   {(file.size / 1024).toFixed(1)} KB
                 </p>
               </div>
-              {isProcessing && (
-                <div className="text-sm text-muted-foreground">Processing...</div>
+              {(isProcessing || validationResult?.isEnriching) && (
+                <div className="text-sm text-muted-foreground">
+                  {isProcessing ? 'Processing...' : 'Fetching token metadata...'}
+                </div>
               )}
             </div>
 
@@ -366,11 +445,34 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
                       Valid Tokens ({validationResult.validRows.length}):
                     </h4>
                     <div className="space-y-2">
-                      {validationResult.validRows.slice(0, 3).map((row, index) => (
-                        <div key={index} className="text-sm text-green-700 font-mono">
-                          {row.requirement_type.toUpperCase()}: {row.contract_address} (min: {row.min_amount})
-                        </div>
-                      ))}
+                      {(validationResult.enrichedRows.length > 0 ? validationResult.enrichedRows : validationResult.validRows)
+                        .slice(0, 3).map((row, index) => {
+                          const enrichedRow = 'isTokenFound' in row ? row as (CSVRow & {
+                            tokenName?: string;
+                            tokenSymbol?: string;
+                            tokenDecimals?: number;
+                            isTokenFound: boolean;
+                          }) : null;
+                          const displayName = enrichedRow?.isTokenFound 
+                            ? `${enrichedRow.tokenName} (${enrichedRow.tokenSymbol})` 
+                            : row.contract_address;
+                          
+                          return (
+                            <div key={index} className="text-sm text-green-700">
+                              <div className="font-medium">
+                                {row.requirement_type.toUpperCase()}: {displayName}
+                              </div>
+                              <div className="font-mono text-xs">
+                                {row.contract_address} (min: {row.min_amount})
+                                {enrichedRow?.tokenDecimals !== undefined && (
+                                  <span className="ml-2 text-green-600">
+                                    • {enrichedRow.tokenDecimals} decimals
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
                       {validationResult.validRows.length > 3 && (
                         <div className="text-sm text-green-600">
                           ... and {validationResult.validRows.length - 3} more tokens
