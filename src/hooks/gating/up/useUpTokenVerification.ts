@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react';
-import { useUniversalProfile } from '@/contexts/UniversalProfileContext';
+import { useState, useEffect, useMemo } from 'react';
 import { TokenRequirement } from '@/types/gating';
+import { useLuksoTokenMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
 import { ethers } from 'ethers';
 
 interface TokenVerificationStatus {
@@ -26,7 +26,44 @@ export const useUpTokenVerification = (
   const [verificationStatus, setVerificationStatus] = useState<Record<string, TokenVerificationStatus>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const { getEnhancedTokenBalances } = useUniversalProfile();
+
+  // Extract token addresses for GraphQL metadata fetching
+  const tokenAddresses = useMemo(() => 
+    requirements.map(req => req.contractAddress), 
+    [requirements]
+  );
+
+  // Fetch token metadata using GraphQL
+  const { data: tokenMetadataResponse, isLoading: isLoadingMetadata } = useLuksoTokenMetadata(
+    tokenAddresses,
+    { 
+      includeIcons: true, 
+      enabled: tokenAddresses.length > 0 
+    }
+  );
+
+  // Transform GraphQL metadata to expected format
+  const metadataMap = useMemo(() => {
+    if (!tokenMetadataResponse?.data?.tokens) return {};
+    
+    const map: Record<string, any> = {};
+    Object.entries(tokenMetadataResponse.data.tokens).forEach(([address, token]) => {
+      const tokenData = token as LuksoTokenMetadata;
+      map[address.toLowerCase()] = {
+        contractAddress: address,
+        name: tokenData.name,
+        symbol: tokenData.symbol,
+        decimals: tokenData.decimals,
+        actualDecimals: tokenData.decimals,
+        displayDecimals: tokenData.decimals,
+        iconUrl: tokenData.icon,
+        isDivisible: tokenData.isDivisible,
+        tokenType: tokenData.tokenType,
+        classification: tokenData.isDivisible ? 'LSP7_DIVISIBLE' : 'LSP7_NON_DIVISIBLE'
+      };
+    });
+    return map;
+  }, [tokenMetadataResponse]);
 
   const requirementsKey = JSON.stringify(requirements);
 
@@ -41,16 +78,13 @@ export const useUpTokenVerification = (
       setError(null);
 
       try {
-        // Step 1: Fetch enhanced metadata with classification
-        const tokenRequests = requirements.map(req => ({
-          contractAddress: req.contractAddress,
-          tokenType: req.tokenType
-        }));
-        const metadataArray = await getEnhancedTokenBalances(tokenRequests);
-        const metadataMap = metadataArray.reduce((acc, meta) => {
-          acc[meta.contractAddress.toLowerCase()] = meta;
-          return acc;
-        }, {} as Record<string, typeof metadataArray[0]>);
+        // Wait for GraphQL metadata to be available
+        if (isLoadingMetadata) {
+          return;
+        }
+
+        // Step 1: Use GraphQL metadata (already available in metadataMap)
+        console.log('[useUpTokenVerification] Using GraphQL metadata for verification:', metadataMap);
         
         // Step 2: Dynamically build all contract calls
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -150,7 +184,7 @@ export const useUpTokenVerification = (
     };
 
     verifyAllTokens();
-  }, [address, requirementsKey, getEnhancedTokenBalances]);
+  }, [address, requirementsKey, metadataMap, isLoadingMetadata]);
 
   return { verificationStatus, isLoading, error };
 }; 

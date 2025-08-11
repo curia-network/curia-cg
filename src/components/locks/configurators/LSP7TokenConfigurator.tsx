@@ -11,7 +11,8 @@ import { ethers } from 'ethers';
 import { GatingRequirement, LSP7TokenConfig } from '@/types/locks';
 import { validateEthereumAddress } from '@/lib/requirements/validation';
 import { parseTokenAmount } from '@/lib/requirements/conversions';
-import { classifyLsp7Cached, getDisplayDecimals, isNonDivisibleToken, type Lsp7Divisibility } from '@/lib/lukso/lsp7Classification';
+import { getDisplayDecimals, isNonDivisibleToken, type Lsp7Divisibility } from '@/lib/lukso/lsp7Classification';
+import { useLuksoSingleToken } from '@/hooks/lukso/useLuksoMetadata';
 
 interface LSP7TokenConfiguratorProps {
   editingRequirement?: GatingRequirement;
@@ -34,9 +35,23 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
   const [tokenSymbol, setTokenSymbol] = useState('');
   const [addressValidation, setAddressValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: false });
   const [amountValidation, setAmountValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: false });
-  const [isLoadingMetadata, setIsLoadingMetadata] = useState(false);
   const [tokenClassification, setTokenClassification] = useState<Lsp7Divisibility | null>(null);
   const [actualDecimals, setActualDecimals] = useState<number>(18);
+
+  // ===== GRAPHQL METADATA FETCHING =====
+  
+  const { 
+    data: tokenData, 
+    isLoading: isLoadingMetadata, 
+    error: metadataError,
+    refetch: refetchMetadata 
+  } = useLuksoSingleToken(
+    contractAddress,
+    { 
+      includeIcons: true, 
+      enabled: addressValidation.isValid 
+    }
+  );
 
   // ===== INITIALIZATION =====
   
@@ -59,16 +74,62 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
     }
   }, [editingRequirement]);
 
+  // ===== GRAPHQL DATA HANDLING =====
+  
+  useEffect(() => {
+    if (tokenData) {
+      console.log(`[LSP7 Configurator] GraphQL data received:`, tokenData);
+      
+      // Validate that this is an LSP7 token
+      if (tokenData.tokenType !== 'LSP7') {
+        console.error(`[LSP7 Configurator] Token is not LSP7, it's ${tokenData.tokenType}`);
+        setTokenName('Invalid Token');
+        setTokenSymbol('ERR');
+        setTokenClassification(null);
+        setAddressValidation({ 
+          isValid: false, 
+          error: `Contract is ${tokenData.tokenType}, not LSP7. Please use the LSP8 configurator instead.` 
+        });
+        return;
+      }
+      
+      // Update metadata from GraphQL
+      setTokenName(tokenData.name || 'Unknown Token');
+      setTokenSymbol(tokenData.symbol || 'UNK');
+      setActualDecimals(tokenData.decimals);
+      
+      // Create classification data from GraphQL response
+      const classification: Lsp7Divisibility = tokenData.isDivisible 
+        ? { kind: 'LSP7_DIVISIBLE', decimals: tokenData.decimals }
+        : { kind: 'LSP7_NON_DIVISIBLE', reason: tokenData.lsp4TokenType === 1 ? 'LSP4_NFT' : 'DECIMALS_ZERO' };
+      
+      setTokenClassification(classification);
+      
+      console.log(`[LSP7 Configurator] ✅ GraphQL metadata applied: ${tokenData.name} (${tokenData.symbol}), decimals=${tokenData.decimals}, divisible=${tokenData.isDivisible}`);
+    }
+  }, [tokenData]);
+
+  useEffect(() => {
+    if (metadataError) {
+      console.error('[LSP7 Configurator] GraphQL metadata error:', metadataError);
+      setTokenName('Unknown Token');
+      setTokenSymbol('UNK');
+      setTokenClassification(null);
+    }
+  }, [metadataError]);
+
   // ===== VALIDATION =====
   
   useEffect(() => {
     const validation = validateEthereumAddress(contractAddress);
     setAddressValidation(validation);
     
-    // Clear metadata when address changes
+    // Clear metadata when address changes and becomes invalid
     if (!validation.isValid) {
       setTokenName('');
       setTokenSymbol('');
+      setTokenClassification(null);
+      setActualDecimals(18); // Reset to default
     }
   }, [contractAddress]);
 
@@ -163,117 +224,11 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
     }
   };
 
-  const handleFetchMetadata = async () => {
+  const handleFetchMetadata = () => {
     if (!addressValidation.isValid) return;
     
-    setIsLoadingMetadata(true);
-    try {
-      console.log(`[LSP7 Configurator] Fetching enhanced metadata for contract: ${contractAddress}`);
-
-      const rpcUrl = process.env.NEXT_PUBLIC_LUKSO_MAINNET_RPC_URL || 'https://rpc.mainnet.lukso.network';
-      
-      // 1. First classify the token using our robust detection pipeline
-      console.log(`[LSP7 Configurator] Step 1: Classifying token...`);
-      const classification = await classifyLsp7Cached({
-        asset: contractAddress as `0x${string}`,
-        rpcUrl,
-      });
-      
-      console.log(`[LSP7 Configurator] ✅ Classification result:`, classification);
-      setTokenClassification(classification);
-      
-      // Handle non-LSP7 tokens
-      if (classification.kind === 'NOT_LSP7') {
-        throw new Error('Contract does not appear to be a valid LUKSO LSP7 token.');
-      }
-      
-      if (classification.kind === 'UNKNOWN') {
-        console.warn(`[LSP7 Configurator] Token classification unknown: ${classification.note}`);
-      }
-
-      // 2. Get display decimals and actual decimals  
-      let contractDecimals = 18; // Fallback
-      
-      // Try to get actual decimals from contract
-      try {
-        const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-        const contract = new ethers.Contract(contractAddress, [
-          'function decimals() view returns (uint8)'
-        ], provider);
-        contractDecimals = await contract.decimals();
-        console.log(`[LSP7 Configurator] Contract decimals: ${contractDecimals}`);
-      } catch (decimalsError) {
-        console.log(`[LSP7 Configurator] Could not fetch contract decimals:`, decimalsError);
-      }
-      
-      // Use the more conservative approach - actual contract decimals for storage,
-      // but respect classification for display validation
-      setActualDecimals(contractDecimals);
-
-      // 3. Fetch basic metadata (name, symbol)
-      console.log(`[LSP7 Configurator] Step 2: Fetching basic metadata...`);
-      const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-      const contract = new ethers.Contract(contractAddress, [
-        'function getData(bytes32) view returns (bytes)',
-        'function getDataBatch(bytes32[]) view returns (bytes[])',
-      ], provider);
-
-      let name = 'Unknown Token';
-      let symbol = 'UNK';
-
-      try {
-        // Try ERC725Y data keys first
-        const LSP4_TOKEN_NAME_KEY = '0xdeba1e292f8ba88238e10ab3c7f88bd4be4fac56cad5194b6ecceaf653468af1';
-        const LSP4_TOKEN_SYMBOL_KEY = '0x2f0a68ab07768e01943a599e73362a0e17a63a72e94dd2e384d2c1d4db932756';
-        
-        const dataKeys = [LSP4_TOKEN_NAME_KEY, LSP4_TOKEN_SYMBOL_KEY];
-        const [nameBytes, symbolBytes] = await contract.getDataBatch(dataKeys);
-        
-        if (nameBytes && nameBytes !== '0x') {
-          name = ethers.utils.toUtf8String(nameBytes);
-        }
-        if (symbolBytes && symbolBytes !== '0x') {
-          symbol = ethers.utils.toUtf8String(symbolBytes);
-        }
-        
-        console.log(`[LSP7 Configurator] ✅ Metadata via ERC725Y: name=${name}, symbol=${symbol}`);
-      } catch (erc725yError) {
-        console.log(`[LSP7 Configurator] ERC725Y metadata failed, trying fallback:`, erc725yError);
-        
-        // Fallback to standard functions
-        try {
-          const fallbackContract = new ethers.Contract(contractAddress, [
-            'function name() view returns (string)',
-            'function symbol() view returns (string)'
-          ], provider);
-          
-          [name, symbol] = await Promise.all([
-            fallbackContract.name().catch(() => 'Unknown Token'),
-            fallbackContract.symbol().catch(() => 'UNK')
-          ]);
-          
-          console.log(`[LSP7 Configurator] ✅ Metadata via fallback: name=${name}, symbol=${symbol}`);
-        } catch (metadataError) {
-          console.log(`[LSP7 Configurator] All metadata methods failed:`, metadataError);
-        }
-      }
-
-      // Update state
-      setTokenName(name);
-      setTokenSymbol(symbol);
-
-      console.log(`[LSP7 Configurator] ✅ Enhanced metadata fetch complete`);
-
-    } catch (error) {
-      console.error('[LSP7 Configurator] Enhanced metadata fetch failed:', error);
-      // Set fallback values
-      setTokenName('Unknown Token');
-      setTokenSymbol('UNK');
-      setTokenClassification(null);
-      // Don't change actualDecimals - keep the previous value or default
-    } finally {
-      setIsLoadingMetadata(false);
-    }
+    console.log(`[LSP7 Configurator] Triggering GraphQL metadata refetch for: ${contractAddress}`);
+    refetchMetadata();
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {

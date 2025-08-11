@@ -32,7 +32,7 @@ import { ethers } from 'ethers';
 import { UPGatingRequirements, VerificationStatus } from '@/types/gating';
 import { lsp26Registry } from '@/lib/lsp26';
 import { useUPSocialProfiles } from '@/hooks/useUPSocialProfiles';
-import { useUPTokenMetadata } from '@/hooks/useUPTokenMetadata';
+import { useLuksoTokenMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
 
 // ===== TYPES =====
 
@@ -128,7 +128,19 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
   // Fetch profiles & token metadata with custom hooks
   const { data: socialProfiles = {}, isLoading: isLoadingSocialProfiles } = useUPSocialProfiles(profileAddresses);
 
-  const { data: tokenMetadata = {}, isLoading: isLoadingTokenMetadata } = useUPTokenMetadata(tokenAddresses);
+  // Fetch token metadata using GraphQL-based hook
+  const { data: tokenMetadataResponse, isLoading: isLoadingTokenMetadata } = useLuksoTokenMetadata(
+    tokenAddresses,
+    { 
+      includeIcons: true, 
+      enabled: tokenAddresses.length > 0 
+    }
+  );
+
+  // Extract token metadata from response
+  const tokenMetadata = useMemo(() => {
+    return tokenMetadataResponse?.data?.tokens || {} as Record<string, LuksoTokenMetadata>;
+  }, [tokenMetadataResponse]);
 
   // ===== FOLLOWER COUNT STATE (user-specific, can't be cached globally) =====
   const [followerState, setFollowerState] = useState<FollowerVerificationState>({
@@ -268,7 +280,7 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
       const enhancedName = tokenData?.name || metadata?.name || token.name;
       const enhancedSymbol = tokenData?.symbol || metadata?.symbol || token.symbol;
       const enhancedDecimals = tokenData?.decimals || metadata?.decimals || 18;
-      const enhancedIconUrl = metadata?.iconUrl; // Icon still comes from separate metadata
+      const enhancedIconUrl = metadata?.icon; // Icon from GraphQL metadata
       
       tokenVerifications[tokenKey] = {
         balance: tokenData?.raw || '0',
