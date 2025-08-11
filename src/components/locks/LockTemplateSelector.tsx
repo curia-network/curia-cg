@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Search, Clock, Users, Sparkles } from 'lucide-react';
+import { Search, Clock, Users, Sparkles, Upload } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 import { LockTemplate, TemplateCategory, TemplateDifficulty, TemplateSearchFilters } from '@/types/templates';
@@ -15,12 +15,14 @@ import { LOCK_TEMPLATES, TEMPLATE_CATEGORIES, DIFFICULTY_LEVELS } from '@/data/l
 interface LockTemplateSelectorProps {
   onSelectTemplate: (template: LockTemplate) => void;
   onStartFromScratch: () => void;
+  onUploadCSV: () => void;
   selectedTemplate?: LockTemplate | null;
 }
 
 export const LockTemplateSelector: React.FC<LockTemplateSelectorProps> = ({
   onSelectTemplate,
   onStartFromScratch,
+  onUploadCSV,
   selectedTemplate
 }) => {
   const [filters, setFilters] = useState<TemplateSearchFilters>({
@@ -86,6 +88,15 @@ export const LockTemplateSelector: React.FC<LockTemplateSelectorProps> = ({
 
       {/* Quick Actions */}
       <div className="flex flex-col sm:flex-row gap-3 justify-center">
+        <Button
+          variant="outline"
+          onClick={onUploadCSV}
+          className="flex items-center justify-center"
+        >
+          <Upload className="h-4 w-4 mr-2" />
+          Upload CSV
+          <Badge variant="secondary" className="ml-2 text-xs">LUKSO only</Badge>
+        </Button>
         <Button
           variant="outline"
           onClick={onStartFromScratch}

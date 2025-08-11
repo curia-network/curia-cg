@@ -38,7 +38,8 @@ const initialState: LockBuilderState = {
   previewMode: false,
   currentScreen: 'requirements',
   selectedRequirementType: undefined,
-  editingRequirementId: undefined
+  editingRequirementId: undefined,
+  showCSVUpload: false
 };
 
 // Context type

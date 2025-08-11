@@ -24,6 +24,7 @@ import { LockTemplate } from '@/types/templates';
 import { GatingRequirementsPreview } from './GatingRequirementsPreview';
 import { UniversalProfileProvider } from '@/contexts/UniversalProfileContext';
 import { authFetchJson } from '@/utils/authFetch';
+import { CSVUploadComponent } from './csv/CSVUploadComponent';
 
 // Step content components
 const MetadataStep = () => {
@@ -55,11 +56,35 @@ const MetadataStep = () => {
       requirements: []
     }));
   }, [setState]);
+
+  const handleUploadCSV = useCallback(() => {
+    setState((prev: LockBuilderState) => ({
+      ...prev,
+      showCSVUpload: true
+    }));
+  }, [setState]);
+
+  const handleCSVUploadCancel = useCallback(() => {
+    setState((prev: LockBuilderState) => ({
+      ...prev,
+      showCSVUpload: false
+    }));
+  }, [setState]);
+  
+  // Show CSV upload component if showCSVUpload is true
+  if (state.showCSVUpload) {
+    return (
+      <CSVUploadComponent
+        onCancel={handleCSVUploadCancel}
+      />
+    );
+  }
   
   return (
     <LockTemplateSelector
       onSelectTemplate={handleSelectTemplate}
       onStartFromScratch={handleStartFromScratch}
+      onUploadCSV={handleUploadCSV}
       selectedTemplate={state.selectedTemplate}
     />
   );

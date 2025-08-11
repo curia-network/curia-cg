@@ -197,6 +197,9 @@ export interface LockBuilderState {
   currentScreen: RequirementBuilderScreen;
   selectedRequirementType?: RequirementType;
   editingRequirementId?: string;
+  
+  // CSV upload state
+  showCSVUpload: boolean;
 }
 
 export type RequirementBuilderScreen = 

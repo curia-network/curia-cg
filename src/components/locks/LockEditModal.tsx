@@ -446,7 +446,10 @@ const LockEditModalContent: React.FC<LockEditModalContentProps> = ({
             },
             validation: { isValid: true, errors: [], warnings: [] },
             previewMode: false,
-            currentScreen: 'requirements'
+            currentScreen: 'requirements',
+            selectedRequirementType: undefined,
+            editingRequirementId: undefined,
+            showCSVUpload: false
           };
       
       setState(initialState);
