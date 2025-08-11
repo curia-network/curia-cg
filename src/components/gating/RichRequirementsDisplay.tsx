@@ -169,6 +169,12 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
     try {
       const results = await Promise.all(
         followingReqs.map(async (req) => {
+          // 🎯 SELF-FOLLOW AUTO-PASS: If user is the person they must follow, auto-pass
+          if (req.value.toLowerCase() === userStatus.address!.toLowerCase()) {
+            console.log(`[RichRequirementsDisplay] ✅ Auto-pass: User IS the person they must follow (${userStatus.address})`);
+            return { req, isFollowing: true };
+          }
+          
           const isFollowing = await getFollowingStatus(userStatus.address!, req.value);
           console.log(`[RichRequirementsDisplay] Following status: ${userStatus.address} → ${req.value} = ${isFollowing}`);
           return { req, isFollowing };
@@ -208,6 +214,65 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
     fetchFollowingStatus();
   }, [fetchFollowingStatus]);
 
+  // ===== FOLLOWED BY STATUS FETCHING =====
+  const fetchFollowedByStatus = useCallback(async () => {
+    if (!userStatus.connected || !userStatus.address) return;
+    if (requirements.followerRequirements == null || requirements.followerRequirements.length === 0) return;
+
+    const followedByReqs = requirements.followerRequirements.filter(r => r.type === 'followed_by');
+    if (followedByReqs.length === 0) return;
+
+    console.log('[RichRequirementsDisplay] 🔄 Fetching followed_by status for requirements:', followedByReqs);
+
+    try {
+      const results = await Promise.all(
+        followedByReqs.map(async (req) => {
+          // 🎯 SELF-FOLLOW AUTO-PASS: If user is the person who must follow them, auto-pass
+          if (req.value.toLowerCase() === userStatus.address!.toLowerCase()) {
+            console.log(`[RichRequirementsDisplay] ✅ Auto-pass: User IS the person who must follow them (${userStatus.address})`);
+            return { req, isFollowedBy: true };
+          }
+          
+          // Check if req.value follows userStatus.address (is user followed by req.value)
+          const isFollowedBy = await getFollowingStatus(req.value, userStatus.address!);
+          console.log(`[RichRequirementsDisplay] Followed by status: ${req.value} → ${userStatus.address} = ${isFollowedBy}`);
+          return { req, isFollowedBy };
+        })
+      );
+
+      setFollowerState(prev => {
+        const updatedFollowerVerifications = { ...prev.followerVerifications };
+        let hasChanges = false;
+        
+        results.forEach(({ req, isFollowedBy }) => {
+          const key = `${req.type}-${req.value}`;
+          const existing = updatedFollowerVerifications[key];
+          if (!existing || existing.status !== isFollowedBy) {
+            hasChanges = true;
+            updatedFollowerVerifications[key] = {
+              type: req.type,
+              value: req.value,
+              status: isFollowedBy,
+              isLoading: false,
+            };
+          }
+        });
+        
+        if (!hasChanges) return prev; // Avoid unnecessary state updates
+        return {
+          ...prev,
+          followerVerifications: updatedFollowerVerifications,
+        };
+      });
+    } catch (err) {
+      console.error('[RichRequirementsDisplay] Failed to fetch followed_by status', err);
+    }
+  }, [userStatus.connected, userStatus.address, requirements.followerRequirements]);
+
+  useEffect(() => {
+    fetchFollowedByStatus();
+  }, [fetchFollowedByStatus]);
+
   // ===== VERIFICATION REFRESH HANDLER =====
   
   const refreshFollowerVerification = useCallback(() => {
@@ -218,13 +283,14 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
       followerVerifications: {},
     });
     
-    // Direct call to fetch function after delay to ensure follow propagation
+    // Direct call to fetch functions after delay to ensure follow propagation
     setTimeout(() => {
-      console.log('[RichRequirementsDisplay] 🔄 Directly calling fetchFollowingStatus');
+      console.log('[RichRequirementsDisplay] 🔄 Directly calling fetchFollowingStatus and fetchFollowedByStatus');
       fetchFollowingStatus(); // Direct call - no dependency on useEffect!
+      fetchFollowedByStatus(); // Direct call for followed_by requirements!
     }, 1000); // 1 second delay to ensure the follow has propagated on LUKSO
     
-  }, [fetchFollowingStatus]);
+  }, [fetchFollowingStatus, fetchFollowedByStatus]);
 
   // ===== FOLLOWER COUNT FETCHING =====
   const followerReqString = JSON.stringify(requirements.followerRequirements ?? []);
