@@ -593,7 +593,7 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
                       </div>
                     </div>
                     <div className="flex items-center">
-                      {getStatusIcon(tokenData?.isLoading, tokenData?.meetsRequirement, tokenData?.error)}
+                      {getStatusIcon(tokenData?.isLoading, requirementMet, tokenData?.error)}
                     </div>
                   </div>
                 );
