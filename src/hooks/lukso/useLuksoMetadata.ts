@@ -6,6 +6,8 @@
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { authFetchJson } from '@/utils/authFetch';
+import { useAuth } from '@/contexts/AuthContext';
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -101,21 +103,12 @@ export const luksoQueryKeys = {
 // API FUNCTIONS
 // ============================================================================
 
-async function fetchLuksoMetadata(request: LuksoMetadataRequest): Promise<LuksoMetadataResponse> {
-  const response = await fetch('/api/lukso/metadata', {
+async function fetchLuksoMetadata(request: LuksoMetadataRequest, token?: string | null): Promise<LuksoMetadataResponse> {
+  return authFetchJson<LuksoMetadataResponse>('/api/lukso/metadata', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify(request),
+    token,
   });
-
-  if (!response.ok) {
-    const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
-  }
-
-  return response.json();
 }
 
 // ============================================================================
@@ -134,6 +127,7 @@ export function useLuksoTokenMetadata(
   }
 ) {
   const { enabled = true, ...requestOptions } = options || {};
+  const { token } = useAuth();
   
   return useQuery({
     queryKey: luksoQueryKeys.metadata('tokens', addresses),
@@ -141,7 +135,7 @@ export function useLuksoTokenMetadata(
       type: 'tokens',
       addresses,
       options: requestOptions,
-    }),
+    }, token),
     enabled: enabled && addresses.length > 0,
     staleTime: 5 * 60 * 1000,      // 5 minutes
     gcTime: 60 * 60 * 1000,        // 1 hour (renamed from cacheTime)
@@ -184,6 +178,7 @@ export function useLuksoProfileMetadata(
   }
 ) {
   const { enabled = true, ...requestOptions } = options || {};
+  const { token } = useAuth();
   
   return useQuery({
     queryKey: luksoQueryKeys.metadata('profiles', addresses),
@@ -191,7 +186,7 @@ export function useLuksoProfileMetadata(
       type: 'profiles',
       addresses,
       options: requestOptions,
-    }),
+    }, token),
     enabled: enabled && addresses.length > 0,
     staleTime: 2 * 60 * 1000,      // 2 minutes (profiles change more often)
     gcTime: 30 * 60 * 1000,        // 30 minutes
@@ -214,6 +209,7 @@ export function useLuksoTokenBalances(
   }
 ) {
   const { enabled = true, ...requestOptions } = options || {};
+  const { token } = useAuth();
   
   return useQuery({
     queryKey: luksoQueryKeys.balances(tokenAddresses, userAddress || ''),
@@ -223,7 +219,7 @@ export function useLuksoTokenBalances(
       includeBalances: true,
       userAddress,
       options: requestOptions,
-    }),
+    }, token),
     enabled: enabled && tokenAddresses.length > 0 && !!userAddress,
     staleTime: 30 * 1000,          // 30 seconds (balances change frequently)
     gcTime: 5 * 60 * 1000,         // 5 minutes
@@ -239,6 +235,7 @@ export function useLuksoTokenBalances(
  */
 export function useLuksoMetadataRefresh() {
   const queryClient = useQueryClient();
+  const { token } = useAuth();
   
   return useMutation({
     mutationFn: async (request: LuksoMetadataRequest) => {
@@ -246,7 +243,7 @@ export function useLuksoMetadataRefresh() {
         ...request,
         options: { ...request.options, forceRefresh: true },
       };
-      return fetchLuksoMetadata(requestWithRefresh);
+      return fetchLuksoMetadata(requestWithRefresh, token);
     },
     onSuccess: (data, variables) => {
       // Invalidate related queries to trigger refetch
@@ -273,6 +270,7 @@ export function useLuksoMetadataRefresh() {
  */
 export function useLuksoMetadataPreload() {
   const queryClient = useQueryClient();
+  const { token } = useAuth();
   
   const preloadTokens = (addresses: string[]) => {
     queryClient.prefetchQuery({
@@ -281,7 +279,7 @@ export function useLuksoMetadataPreload() {
         type: 'tokens',
         addresses,
         options: { includeIcons: true },
-      }),
+      }, token),
       staleTime: 5 * 60 * 1000,
     });
   };
@@ -293,7 +291,7 @@ export function useLuksoMetadataPreload() {
         type: 'profiles',
         addresses,
         options: { includeIcons: true },
-      }),
+      }, token),
       staleTime: 2 * 60 * 1000,
     });
   };

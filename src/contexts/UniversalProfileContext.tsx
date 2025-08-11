@@ -15,13 +15,11 @@ import React, {
   useState,
   useEffect,
   useCallback,
-  useMemo,
   ReactNode,
 } from 'react';
 import { ethers } from 'ethers';
-import { ERC725 } from '@erc725/erc725.js';
-import LSP4DigitalAssetSchema from '@erc725/erc725.js/schemas/LSP4DigitalAsset.json';
-import { classifyLsp7Cached, getDisplayDecimals, isNonDivisibleToken } from '@/lib/lukso/lsp7Classification';
+import { LuksoApiService } from '@/lib/lukso/LuksoApiService';
+import type { LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
 
 // ===== INTERFACES =====
 
@@ -168,73 +166,7 @@ export const UniversalProfileProvider: React.FC<{ children: ReactNode }> = ({ ch
   }, [upAddress, provider]);
 
   // ===== TOKEN ICON FETCHING =====
-  
-  // Cache for token icons to avoid repeated fetches
-  const tokenIconCache = useMemo(() => new Map<string, string | null>(), []);
 
-  // Helper to fetch token icon using the official ERC725.js library (LUKSO docs approach)
-  const fetchTokenIcon = useCallback(async (contractAddress: string): Promise<string | null> => {
-    const lower = contractAddress.toLowerCase();
-    if (tokenIconCache.has(lower)) {
-      return tokenIconCache.get(lower) ?? null;
-    }
-
-    try {
-      console.log(`[UP Context] Fetching LSP4Metadata icon for ${contractAddress}`);
-      
-      // Use official ERC725.js library as per LUKSO docs
-      const erc725 = new ERC725(
-        LSP4DigitalAssetSchema, 
-        contractAddress, 
-        'https://rpc.mainnet.lukso.network',
-        {
-          ipfsGateway: 'https://api.universalprofile.cloud/ipfs/',
-        }
-      );
-
-      // Use fetchData to automatically handle VerifiableURI decoding
-      let result;
-      try {
-        result = await erc725.fetchData(['LSP4Metadata']);
-      } catch (erc725Error) {
-        console.log(`[UP Context] ⚠️ ERC725Y LSP4Metadata failed for ${contractAddress}:`, erc725Error);
-        tokenIconCache.set(lower, null);
-        return null;
-      }
-      
-      const metadata = result.find(item => item.name === 'LSP4Metadata');
-      
-      if (!metadata?.value) {
-        console.log(`[UP Context] No LSP4Metadata found for ${contractAddress}`);
-        tokenIconCache.set(lower, null);
-        return null;
-      }
-
-      // The value is already decoded JSON by ERC725.js
-      const metadataJson = metadata.value as { LSP4Metadata?: { icon?: Array<{ url: string }> } };
-      const iconUrl = metadataJson.LSP4Metadata?.icon?.[0]?.url;
-      
-      if (iconUrl) {
-        // Resolve IPFS URL if needed
-        const resolvedIconUrl = iconUrl.startsWith('ipfs://') 
-          ? iconUrl.replace('ipfs://', 'https://api.universalprofile.cloud/ipfs/')
-          : iconUrl;
-        
-        console.log(`[UP Context] ✅ Found token icon: ${resolvedIconUrl}`);
-        tokenIconCache.set(lower, resolvedIconUrl);
-        return resolvedIconUrl;
-      }
-
-      console.log(`[UP Context] No icon found in LSP4Metadata for ${contractAddress}`);
-      tokenIconCache.set(lower, null);
-      return null;
-      
-    } catch (error) {
-      console.error(`[UP Context] LSP4Metadata fetch failed for ${contractAddress}:`, error);
-      tokenIconCache.set(lower, null);
-      return null;
-    }
-  }, [tokenIconCache]);
 
   const getTokenBalances = useCallback(async (tokenAddresses: string[]): Promise<TokenBalance[]> => {
     if (!provider) return [];
@@ -242,49 +174,23 @@ export const UniversalProfileProvider: React.FC<{ children: ReactNode }> = ({ ch
     const balances = await Promise.all(
       tokenAddresses.map(async (addr) => {
         try {
-          // ✅ Use proper provider URL format like the old implementation
-          const providerUrl = 'https://rpc.mainnet.lukso.network';
+          // Use GraphQL for basic metadata (lightweight, no icons)
+          const luksoApiService = new LuksoApiService();
+          const response = await luksoApiService.fetchMetadata({
+            type: 'tokens',
+            addresses: [addr],
+            options: { includeIcons: false }
+          });
           
-          const erc725 = new ERC725(
-            LSP4DigitalAssetSchema, 
-            addr, 
-            providerUrl,
-            {
-              ipfsGateway: 'https://api.universalprofile.cloud/ipfs/',
-            }
-          );
-          
-          // Only fetch LSP4TokenName and LSP4TokenSymbol (LSP4TokenDecimals doesn't exist)
-          const nameAndSymbol = await erc725.fetchData(['LSP4TokenName', 'LSP4TokenSymbol']);
-          
-          const name = nameAndSymbol.find(d => d.name === 'LSP4TokenName')?.value as string | undefined;
-          const symbol = nameAndSymbol.find(d => d.name === 'LSP4TokenSymbol')?.value as string | undefined;
+          const metadata = response.success ? response.data.tokens?.[addr.toLowerCase()] as LuksoTokenMetadata | undefined : undefined;
+          const name = metadata?.name;
+          const symbol = metadata?.symbol;
 
-          let decimals = 18; // Default for most fungible tokens
-          try {
-            // Standard contract call for decimals, works for LSP7
-            const contract = new ethers.Contract(addr, ['function decimals() view returns (uint8)'], provider);
-            decimals = await contract.decimals();
-          } catch {
-            // This is expected for NFTs (LSP8) which often don't have a decimals function.
-            // We can safely ignore this error and use the default of 18, though it won't be used.
-            console.log(`Could not fetch decimals for ${addr}, likely an NFT.`)
-          }
+          // Use decimals from GraphQL metadata (more reliable)
+          const decimals = metadata?.decimals ?? 18;
 
-          // ===== FETCH TOKEN ICON =====
-          let iconUrl: string | undefined;
-          try {
-            console.log(`[UP Context] Attempting to fetch token icon for ${addr}...`);
-            iconUrl = await fetchTokenIcon(addr) || undefined;
-            
-            if (iconUrl) {
-              console.log(`[UP Context] ✅ Token icon fetched successfully for ${addr}`);
-            } else {
-              console.log(`[UP Context] ⚠️ No token icon available for ${addr}`);
-            }
-          } catch (iconError) {
-            console.log(`[UP Context] Icon fetch failed (non-critical) for ${addr}:`, iconError);
-          }
+          // Note: Icons not available in basic getTokenBalances - use getEnhancedTokenBalances for full metadata
+          const iconUrl: string | undefined = undefined;
 
           return {
             contractAddress: addr,
@@ -303,146 +209,99 @@ export const UniversalProfileProvider: React.FC<{ children: ReactNode }> = ({ ch
     );
 
     return balances;
-  }, [provider, fetchTokenIcon]);
+  }, [provider]);
 
-  // Enhanced version that includes token classification
+  // Enhanced version that includes token classification (GraphQL-powered)
   const getEnhancedTokenBalances = useCallback(async (
     tokenRequests: Array<{ contractAddress: string; tokenType: 'LSP7' | 'LSP8' }>
   ): Promise<TokenBalance[]> => {
     if (!provider) return [];
     
-    const balances = await Promise.all(
-      tokenRequests.map(async ({ contractAddress: addr, tokenType }) => {
-        try {
-          console.log(`[UP Context] Fetching enhanced metadata for ${addr} (${tokenType})`);
+    try {
+      console.log(`[UP Context] 🚀 Fetching GraphQL metadata for ${tokenRequests.length} tokens...`);
+      
+      // Extract unique addresses for GraphQL query
+      const addresses = tokenRequests.map(req => req.contractAddress);
+      
+      // Use LuksoApiService to fetch metadata via GraphQL
+      const luksoApiService = new LuksoApiService();
+      const response = await luksoApiService.fetchMetadata({
+        type: 'tokens',
+        addresses,
+        options: { includeIcons: true }
+      });
+      
+      if (!response.success || !response.data?.tokens) {
+        console.error('[UP Context] ❌ GraphQL metadata fetch failed:', response.error);
+        throw new Error(response.error || 'Failed to fetch token metadata');
+      }
+      
+      console.log(`[UP Context] ✅ GraphQL metadata fetched for ${Object.keys(response.data.tokens).length} tokens`);
+      
+      // Transform GraphQL data to match existing TokenBalance interface
+      const balances = tokenRequests.map(({ contractAddress: addr, tokenType }) => {
+        const metadata = response.data.tokens?.[addr.toLowerCase()] as LuksoTokenMetadata | undefined;
+        
+        if (metadata) {
+          console.log(`[UP Context] ✅ GraphQL metadata for ${addr}:`, {
+            name: metadata.name,
+            symbol: metadata.symbol,
+            decimals: metadata.decimals,
+            isDivisible: metadata.isDivisible,
+            tokenType: metadata.tokenType
+          });
           
-          // ✅ Use proper provider URL format
-          const providerUrl = 'https://rpc.mainnet.lukso.network';
-          
-          // Try to fetch basic metadata, but don't fail if ERC725Y doesn't work
-          let name: string | undefined;
-          let symbol: string | undefined;
-          
-          try {
-            const erc725 = new ERC725(
-              LSP4DigitalAssetSchema, 
-              addr, 
-              providerUrl,
-              {
-                ipfsGateway: 'https://api.universalprofile.cloud/ipfs/',
-              }
-            );
-            
-            const nameAndSymbol = await erc725.fetchData(['LSP4TokenName', 'LSP4TokenSymbol']);
-            name = nameAndSymbol.find(d => d.name === 'LSP4TokenName')?.value as string | undefined;
-            symbol = nameAndSymbol.find(d => d.name === 'LSP4TokenSymbol')?.value as string | undefined;
-            console.log(`[UP Context] ✅ ERC725Y metadata for ${addr}: name=${name}, symbol=${symbol}`);
-          } catch (erc725Error) {
-            console.log(`[UP Context] ⚠️ ERC725Y metadata failed for ${addr}, trying direct contract calls:`, erc725Error);
-            
-            // Fallback to direct contract calls
-            try {
-              const contract = new ethers.Contract(addr, [
-                'function name() view returns (string)',
-                'function symbol() view returns (string)'
-              ], provider);
-              
-              name = await contract.name();
-              symbol = await contract.symbol();
-              console.log(`[UP Context] ✅ Direct contract metadata for ${addr}: name=${name}, symbol=${symbol}`);
-            } catch (directError) {
-              console.log(`[UP Context] ⚠️ Direct contract metadata also failed for ${addr}:`, directError);
-              name = 'Unknown Token';
-              symbol = '???';
-            }
-          }
-
-          // Get actual decimals from contract
-          let actualDecimals = 18; // Default fallback
-          try {
-            if (tokenType === 'LSP7') {
-              const contract = new ethers.Contract(addr, ['function decimals() view returns (uint8)'], provider);
-              actualDecimals = await contract.decimals();
-            } else {
-              actualDecimals = 0; // LSP8 tokens don't have decimals
-            }
-          } catch {
-            console.log(`[UP Context] Could not fetch decimals for ${addr}, using defaults`);
-            actualDecimals = tokenType === 'LSP8' ? 0 : 18;
-          }
-
-          // Enhanced classification for LSP7 tokens
-          let displayDecimals = actualDecimals;
-          let isDivisible = actualDecimals > 0;
-          let classification = 'basic';
-
-          if (tokenType === 'LSP7') {
-            try {
-              console.log(`[UP Context] Classifying LSP7 token ${addr}...`);
-              const lsp7Classification = await classifyLsp7Cached({
-                asset: addr as `0x${string}`,
-                rpcUrl: providerUrl,
-              });
-              
-              displayDecimals = getDisplayDecimals(lsp7Classification);
-              isDivisible = !isNonDivisibleToken(lsp7Classification);
-              classification = `${lsp7Classification.kind}${lsp7Classification.kind === 'LSP7_NON_DIVISIBLE' ? `:${lsp7Classification.reason}` : ''}`;
-              
-              console.log(`[UP Context] ✅ LSP7 classification for ${addr}: ${classification}, displayDecimals: ${displayDecimals}`);
-            } catch (classificationError) {
-              console.log(`[UP Context] ⚠️ LSP7 classification failed for ${addr}, using fallback:`, classificationError);
-              // Keep the defaults we already set
-            }
-          } else {
-            // LSP8 tokens are always non-divisible NFTs
-            displayDecimals = 0;
-            isDivisible = false;
-            classification = 'LSP8_NFT';
-          }
-
-          // ===== FETCH TOKEN ICON =====
-          let iconUrl: string | undefined;
-          try {
-            iconUrl = await fetchTokenIcon(addr) || undefined;
-          } catch (iconError) {
-            console.log(`[UP Context] Icon fetch failed (non-critical) for ${addr}:`, iconError);
-          }
-
           return {
             contractAddress: addr,
             balance: '0', // This function only fetches metadata
-            name: name || 'Unknown Token',
-            symbol: symbol || 'UNK',
-            decimals: actualDecimals, // Keep for backward compatibility
-            iconUrl,
-            // Enhanced classification data
-            actualDecimals,
-            displayDecimals,
-            isDivisible,
-            tokenType,
-            classification,
+            name: metadata.name || 'Unknown Token',
+            symbol: metadata.symbol || 'UNK',
+            decimals: metadata.decimals, // Keep for backward compatibility
+            iconUrl: metadata.icon,
+            // Enhanced classification data from GraphQL
+            actualDecimals: metadata.decimals,
+            displayDecimals: metadata.decimals,
+            isDivisible: metadata.isDivisible,
+            tokenType: metadata.tokenType as 'LSP7' | 'LSP8',
+            classification: metadata.isDivisible ? 'LSP7_DIVISIBLE' : 
+                           metadata.tokenType === 'LSP8' ? 'LSP8_NFT' : 'LSP7_NON_DIVISIBLE',
           };
-        } catch (error) {
-          console.error(`[UP Context] Error fetching enhanced metadata for token ${addr}:`, error);
-          // Return a fallback object
+        } else {
+          console.warn(`[UP Context] ⚠️ No GraphQL metadata found for ${addr}, using fallback`);
           return { 
             contractAddress: addr, 
             balance: '0', 
             name: 'Unknown Token', 
-            symbol: '???', 
+            symbol: 'UNK', 
             decimals: tokenType === 'LSP8' ? 0 : 18,
             actualDecimals: tokenType === 'LSP8' ? 0 : 18,
             displayDecimals: tokenType === 'LSP8' ? 0 : 18,
-            isDivisible: tokenType !== 'LSP8',
+            isDivisible: tokenType === 'LSP7',
             tokenType,
-            classification: 'UNKNOWN',
+            classification: 'fallback',
           };
         }
-      })
-    );
+      });
 
-    return balances;
-  }, [provider, fetchTokenIcon]);
+      return balances;
+    } catch (error) {
+      console.error('[UP Context] ❌ Error fetching GraphQL metadata:', error);
+      
+      // Return fallback objects for all requests  
+      return tokenRequests.map(({ contractAddress: addr, tokenType }) => ({ 
+        contractAddress: addr, 
+        balance: '0', 
+        name: 'Unknown Token', 
+        symbol: 'UNK', 
+        decimals: tokenType === 'LSP8' ? 0 : 18,
+        actualDecimals: tokenType === 'LSP8' ? 0 : 18,
+        displayDecimals: tokenType === 'LSP8' ? 0 : 18,
+        isDivisible: tokenType === 'LSP7',
+        tokenType,
+        classification: 'error',
+      }));
+    }
+  }, [provider]);
 
   const signMessage = useCallback(async (message: string): Promise<string> => {
     if (!provider) {

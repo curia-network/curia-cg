@@ -484,12 +484,145 @@ GraphQL Infrastructure:
 - src/hooks/lukso/useLuksoMetadata.ts ✅
 ```
 
+## UniversalProfileContext Analysis & Refactor Plan
+
+### **Current State Analysis**
+
+The `UniversalProfileContext` is a critical piece that manages:
+
+1. **Connection Management**: UP wallet connection, account/chain listeners
+2. **Balance Fetching**: LYX balance, token balances 
+3. **Enhanced Metadata**: `getEnhancedTokenBalances` - heavy RPC usage
+4. **Message Signing**: Wallet integration for authentication
+
+### **Key Functions Requiring Migration**
+
+#### `getEnhancedTokenBalances` (PRIMARY TARGET)
+**Current Implementation:**
+- Uses ERC725.js for LSP4 metadata (name, symbol)
+- Direct RPC calls for decimals via `contract.decimals()`
+- `classifyLsp7Cached` for token classification
+- `fetchTokenIcon` for icon URLs
+- Complex error handling and fallbacks
+
+**Migration Strategy:**
+```typescript
+// OLD (RPC-heavy):
+getEnhancedTokenBalances(requests) → [ERC725.js + RPC calls + classification]
+
+// NEW (GraphQL-based):
+getEnhancedTokenBalances(requests) → LuksoApiService.fetchMetadata()
+```
+
+#### `getTokenBalances` (SECONDARY TARGET) 
+**Current Implementation:**
+- Pure balance fetching via RPC (`balanceOf`)
+- No metadata, just balance numbers
+- Simpler, less prone to failure
+
+**Migration Strategy:**
+- Keep RPC for balance fetching (reliable)
+- Use GraphQL only for metadata enhancement
+
+### **Refactor Approach**
+
+#### **Option A: Minimal Migration (RECOMMENDED)**
+```typescript
+getEnhancedTokenBalances(requests) {
+  // 1. Use LuksoApiService for metadata (name, symbol, decimals, icons)
+  // 2. Keep RPC for actual balance fetching
+  // 3. Merge GraphQL metadata with RPC balances
+  // 4. Remove ERC725.js dependency
+  // 5. Remove classifyLsp7Cached dependency
+}
+```
+
+#### **Option B: Full Replacement** 
+```typescript
+// Replace entire context with:
+// - GraphQL for all metadata
+// - React Query for caching
+// - Separate hooks for different concerns
+```
+
+#### **Option C: Hybrid Approach**
+```typescript
+// Keep existing structure but:
+// - Replace metadata fetching with GraphQL
+// - Keep balance fetching with RPC
+// - Add GraphQL caching layer
+```
+
+### **Dependencies to Remove**
+```typescript
+// Current heavy imports:
+import { ERC725 } from '@erc725/erc725.js';
+import LSP4DigitalAssetSchema from '@erc725/erc725.js/schemas/LSP4DigitalAsset.json';
+import { classifyLsp7Cached, getDisplayDecimals, isNonDivisibleToken } from '@/lib/lukso/lsp7Classification';
+
+// New lightweight imports:
+import { LuksoApiService } from '@/lib/lukso/LuksoApiService';
+import type { LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
+```
+
+### **Implementation Plan**
+
+#### **Phase 1: Prepare**
+1. ✅ Document current behavior
+2. ✅ Identify all consumers of `getEnhancedTokenBalances`
+3. ✅ Plan data structure compatibility
+
+#### **Phase 2: Replace Core Logic**
+1. Replace ERC725.js metadata fetching with `LuksoApiService`
+2. Transform GraphQL response to match current `TokenBalance` interface
+3. Remove classification logic (use GraphQL data directly)
+4. Keep same function signature for compatibility
+
+#### **Phase 3: Test & Validate**
+1. Test with JAN token (known problematic case)
+2. Verify all existing consumers work unchanged
+3. Performance comparison (GraphQL vs RPC)
+
+#### **Phase 4: Cleanup**
+1. Remove unused imports and dependencies
+2. Update error handling
+3. Add GraphQL-specific logging
+
+### **Risk Assessment**
+
+**LOW RISK**: 
+- `getEnhancedTokenBalances` is well-isolated
+- Function signature can remain unchanged
+- Fallback logic already exists
+
+**MEDIUM RISK**: 
+- Many components depend on this context
+- Data structure changes could break consumers
+
+**MITIGATION**:
+- Keep exact same return interface
+- Comprehensive testing before merge
+- Gradual rollout with feature flags
+
+### **Success Criteria**
+
+1. ✅ JAN token displays correct metadata (name, symbol, decimals)
+2. ✅ Performance improvement (GraphQL < 500ms vs RPC > 2s)
+3. ✅ No breaking changes to existing components
+4. ✅ Reduced bundle size (remove ERC725.js)
+5. ✅ Better error handling and user feedback
+
 ## Next Steps
 
-1. **Start with Phase 2** - Migrate LSP7/LSP8 configurators first
-2. **Test thoroughly** - Use JAN token and other problematic cases
-3. **Monitor performance** - Verify GraphQL is faster than RPC
-4. **Gradual rollout** - Enable feature flags for testing
-5. **Complete phases sequentially** - Don't rush, ensure each phase works
+**IMMEDIATE**: 
+1. ✅ Complete this analysis 
+2. ✅ Create isolated test for `getEnhancedTokenBalances`
+3. ✅ Implement replacement with careful interface preservation
+
+**FOLLOWING**:
+1. **Test with Phase 1/2 completions** - Verify RichRequirementsDisplay + useUpTokenVerification work
+2. **Complete UniversalProfileContext migration** - Use detailed plan above
+3. **Migrate remaining configurators** - LSP8NFTConfigurator, etc.
+4. **End-to-end testing** - JAN, DRIZZLE, LUKSO OG tokens
 
 This migration will solve the fundamental reliability issues with LUKSO metadata fetching while providing a much better developer and user experience.
