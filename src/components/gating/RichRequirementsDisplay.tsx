@@ -11,7 +11,7 @@
 
 'use client';
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -36,6 +36,8 @@ import { useUPSocialProfiles } from '@/hooks/useUPSocialProfiles';
 import { useLuksoTokenMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
 import { getTokenPrimaryMarketplaceUrl } from '@/lib/lukso/tokenMarketplaceIntegration';
 import { useCgLib } from '@/contexts/CgLibContext';
+import { useFollowAction } from '@/hooks/useFollowAction';
+import { useUniversalProfile } from '@/contexts/UniversalProfileContext';
 
 // ===== TYPES =====
 
@@ -102,6 +104,9 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
   // 🔍 DEBUG: Log fulfillment prop value
   console.log(`[RichRequirementsDisplay] 🔧 Fulfillment mode: "${fulfillment}" (${typeof fulfillment})`);
   
+  // ===== UNIVERSAL PROFILE CONTEXT =====
+  const { provider } = useUniversalProfile();
+  
   // ===== REACT QUERY DATA FETCHING =====
   
   // Get all addresses we need profiles for
@@ -149,6 +154,19 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
   const [followerState, setFollowerState] = useState<FollowerVerificationState>({
     followerVerifications: {},
   });
+
+  // ===== VERIFICATION REFRESH HANDLER =====
+  
+  const refreshFollowerVerification = useCallback(() => {
+    console.log('[RichRequirementsDisplay] Refreshing follower verification after follow action');
+    
+    // Clear follower state to trigger re-verification
+    setFollowerState({
+      followerVerifications: {},
+    });
+    
+    // The useEffect below will automatically re-run verification
+  }, []);
 
   // ===== FOLLOWER COUNT FETCHING =====
   const followerReqString = JSON.stringify(requirements.followerRequirements ?? []);
@@ -700,7 +718,19 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
                             )}
                           </div>
                         </div>
-                        <div className="flex items-center ml-3">
+                        <div className="flex items-center space-x-2 ml-3">
+                          {/* Follow Button for failed must_follow requirements */}
+                          {followerReq.type === 'following' && 
+                           !reqData?.status && 
+                           userStatus.connected && 
+                           !isPreviewMode && 
+                           provider && (
+                            <FollowButton
+                              targetAddress={followerReq.value}
+                              targetName={socialProfile?.displayName}
+                              onSuccess={refreshFollowerVerification}
+                            />
+                          )}
                           {getStatusIcon(reqData?.isLoading, reqData?.status, reqData?.error)}
                         </div>
                       </div>
@@ -905,5 +935,79 @@ const RichMarketplaceButton: React.FC<RichMarketplaceButtonProps> = ({
       <ShoppingCart className="h-3 w-3 mr-1" />
       Get
     </Button>
+  );
+};
+
+// ===== FOLLOW BUTTON COMPONENT =====
+
+interface FollowButtonProps {
+  targetAddress: string;
+  targetName?: string;
+  onSuccess: () => void;
+}
+
+const FollowButton: React.FC<FollowButtonProps> = ({ 
+  targetAddress, 
+  targetName, 
+  onSuccess 
+}) => {
+  const { provider } = useUniversalProfile();
+  
+  const { handleFollow, isFollowPending, followError, clearError } = useFollowAction({
+    targetAddress,
+    targetName,
+    onSuccess
+  });
+
+  const handleFollowClick = async () => {
+    if (!provider) {
+      console.error('[FollowButton] No provider available');
+      return;
+    }
+
+    try {
+      const signer = provider.getSigner();
+      await handleFollow(signer);
+    } catch (error) {
+      console.error('[FollowButton] Follow action failed:', error);
+    }
+  };
+
+  return (
+    <div className="flex flex-col items-end">
+      <Button 
+        variant="outline" 
+        size="sm" 
+        onClick={handleFollowClick}
+        disabled={isFollowPending || !provider}
+        className="h-7 px-2 text-xs hover:bg-blue-50 hover:border-blue-300 dark:hover:bg-blue-900/20"
+        title={`Follow ${targetName || 'this profile'}`}
+      >
+        {isFollowPending ? (
+          <>
+            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+            Following...
+          </>
+        ) : (
+          <>
+            <UserCheck className="h-3 w-3 mr-1" />
+            Follow
+          </>
+        )}
+      </Button>
+      
+      {/* Error Display */}
+      {followError && (
+        <div className="mt-1 text-xs text-red-600 dark:text-red-400 max-w-[120px] text-right">
+          {followError}
+          <button 
+            onClick={clearError}
+            className="ml-1 hover:underline"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+    </div>
   );
 }; 

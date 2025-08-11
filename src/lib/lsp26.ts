@@ -4,7 +4,11 @@ export const LSP26_REGISTRY_ADDRESS = '0xf01103E5a9909Fc0DBe8166dA7085e0285daDDc
 
 export const LSP26_ABI = [
   'function followerCount(address addr) view returns (uint256)',
-  'function isFollowing(address follower, address addr) view returns (bool)'
+  'function isFollowing(address follower, address addr) view returns (bool)',
+  'function follow(address addr) external',
+  'function unfollow(address addr) external',
+  'event Follow(address indexed follower, address indexed addr)',
+  'event Unfollow(address indexed follower, address indexed addr)'
 ];
 
 export interface LSP26VerificationResult {
@@ -205,4 +209,93 @@ export const isFollowing = (follower: string, target: string): Promise<boolean> 
   lsp26Registry.isFollowing(follower, target);
 
 export const verifyFollowerRequirements = (userAddress: string, requirements: FollowerRequirement[]) =>
-  lsp26Registry.verifyFollowerRequirements(userAddress, requirements); 
+  lsp26Registry.verifyFollowerRequirements(userAddress, requirements);
+
+// === TRANSACTION FUNCTIONS FOR FOLLOW ACTIONS ===
+
+/**
+ * Execute a follow transaction on the LSP26 registry
+ * @param targetAddress - The Universal Profile address to follow
+ * @param signer - Connected ethers signer (should be connected to user's UP)
+ * @returns Transaction object
+ */
+export async function followProfile(
+  targetAddress: string, 
+  signer: ethers.Signer
+): Promise<ethers.ContractTransaction> {
+  try {
+    // 1. Validate inputs
+    if (!ethers.utils.isAddress(targetAddress)) {
+      throw new Error('Invalid target address format');
+    }
+
+    // 2. Create contract instance with signer for transactions
+    const contract = new ethers.Contract(LSP26_REGISTRY_ADDRESS, LSP26_ABI, signer);
+    
+    // 3. Gas estimation
+    const gasEstimate = await contract.estimateGas.follow(targetAddress);
+    const gasLimit = gasEstimate.mul(110).div(100); // 10% buffer for safety
+    
+    console.log(`[LSP26] Following ${targetAddress} with gas limit: ${gasLimit.toString()}`);
+    
+    // 4. Execute follow transaction
+    const tx = await contract.follow(targetAddress, { gasLimit });
+    
+    console.log(`[LSP26] Follow transaction submitted: ${tx.hash}`);
+    return tx;
+    
+  } catch (error: any) {
+    console.error('[LSP26] Follow transaction failed:', error);
+    
+    // Enhanced error handling for specific cases
+    if (error.code === 'INSUFFICIENT_FUNDS' || error.message?.includes('insufficient funds')) {
+      throw new Error('Insufficient LYX for gas fees');
+    }
+    if (error.message?.includes('User denied') || error.code === 'ACTION_REJECTED') {
+      throw new Error('Transaction cancelled by user');
+    }
+    if (error.message?.includes('already following')) {
+      throw new Error('Already following this profile');
+    }
+    
+    // Generic error fallback
+    throw new Error(error.message || 'Failed to follow profile');
+  }
+}
+
+/**
+ * Check if user has sufficient balance for a follow transaction
+ * @param signer - Connected ethers signer
+ * @param targetAddress - Address to follow (for gas estimation)
+ * @returns boolean indicating if balance is sufficient
+ */
+export async function checkSufficientBalance(
+  signer: ethers.Signer,
+  targetAddress: string
+): Promise<boolean> {
+  try {
+    const contract = new ethers.Contract(LSP26_REGISTRY_ADDRESS, LSP26_ABI, signer);
+    
+    // Get current balance
+    const balance = await signer.getBalance();
+    
+    // Estimate gas for follow transaction
+    const gasEstimate = await contract.estimateGas.follow(targetAddress);
+    const gasPrice = await signer.getGasPrice();
+    
+    // Calculate required balance (gas * gasPrice)
+    const requiredBalance = gasEstimate.mul(gasPrice);
+    
+    console.log(`[LSP26] Balance check - Required: ${ethers.utils.formatEther(requiredBalance)} LYX, Available: ${ethers.utils.formatEther(balance)} LYX`);
+    
+    return balance.gte(requiredBalance);
+  } catch (error) {
+    console.error('[LSP26] Balance check failed:', error);
+    // If we can't check, assume they don't have enough to be safe
+    return false;
+  }
+}
+
+// Convenience function that matches existing naming pattern
+export const getFollowingStatus = (follower: string, target: string): Promise<boolean> => 
+  isFollowing(follower, target); 
