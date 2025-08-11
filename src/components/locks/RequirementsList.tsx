@@ -9,7 +9,7 @@ import { cn } from '@/lib/utils';
 import { GatingRequirement, RequirementCategory } from '@/types/locks';
 import { useLockBuilder } from './LockBuilderProvider';
 import { RequirementCard } from './RequirementCard';
-import { useUPTokenMetadata } from '@/hooks/useUPTokenMetadata';
+import { useLuksoTokenMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
 import { useUPSocialProfiles } from '@/hooks/useUPSocialProfiles';
 
 // Category metadata for grouping and display
@@ -58,9 +58,35 @@ export const RequirementsList: React.FC<RequirementsListProps> = () => {
       .filter(Boolean); // Remove any undefined addresses
   }, [requirements]);
 
-  // Fetch metadata using existing hooks (same as RichRequirementsDisplay)
-  const { data: tokenMetadata = {}, isLoading: isLoadingTokens } = useUPTokenMetadata(tokenAddresses);
+  // Fetch metadata using GraphQL hooks
+  const { data: tokenMetadataResponse, isLoading: isLoadingTokens } = useLuksoTokenMetadata(
+    tokenAddresses,
+    { 
+      includeIcons: true, 
+      enabled: tokenAddresses.length > 0 
+    }
+  );
   const { data: socialProfiles = {}, isLoading: isLoadingProfiles } = useUPSocialProfiles(profileAddresses);
+
+  // Transform GraphQL response to expected format
+  const tokenMetadata = useMemo(() => {
+    if (!tokenMetadataResponse?.data?.tokens) return {};
+    
+    const result: Record<string, any> = {};
+    Object.entries(tokenMetadataResponse.data.tokens).forEach(([address, token]) => {
+      const tokenData = token as LuksoTokenMetadata;
+      result[address.toLowerCase()] = {
+        contractAddress: address,
+        name: tokenData.name,
+        symbol: tokenData.symbol,
+        decimals: tokenData.decimals,
+        iconUrl: tokenData.icon,
+        isDivisible: tokenData.isDivisible,
+        tokenType: tokenData.tokenType,
+      };
+    });
+    return result;
+  }, [tokenMetadataResponse]);
 
   // Helper function to determine which ecosystem a requirement belongs to
   const getRequirementEcosystem = (requirementType: string): 'universal_profile' | 'ethereum_profile' => {
