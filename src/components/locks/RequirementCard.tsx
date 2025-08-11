@@ -108,6 +108,7 @@ export const RequirementCard: React.FC<RequirementCardProps> = ({
     const config = requirement.config as any; // eslint-disable-line @typescript-eslint/no-explicit-any
     const contractAddress = config.contractAddress;
     const minAmount = config.minAmount || '0';
+    const tokenId = config.tokenId; // For specific LSP8 tokens
     const name = tokenMetadata?.name || config.name || 'Unknown Token';
     const symbol = tokenMetadata?.symbol || config.symbol || 'UNK';
     const decimals = tokenMetadata?.decimals ?? config.decimals;
@@ -157,7 +158,13 @@ export const RequirementCard: React.FC<RequirementCardProps> = ({
             )}
           </div>
           <div className="text-sm text-muted-foreground mt-1">
-            <div>Require: {formatAmount(minAmount, decimals, symbol)}</div>
+            <div>
+              {isLSP8 && tokenId ? (
+                `Require: Token #${tokenId}`
+              ) : (
+                `Require: ${formatAmount(minAmount, decimals, symbol)}`
+              )}
+            </div>
             {contractAddress && (
               <div className="text-xs">
                 Contract: {truncateAddress(contractAddress)}

@@ -17,6 +17,7 @@ interface CSVRow {
   requirement_type: string;
   contract_address: string;
   min_amount: string;
+  token_id?: string; // Optional 5th column for specific LSP8 tokens
 }
 
 interface ValidationResult {
@@ -171,20 +172,44 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
             : row.contract_address
         };
       } else if (row.requirement_type === 'lsp8_nft') {
+        const config: any = {
+          contractAddress: row.contract_address,
+          name: row.tokenName || 'Unknown Collection',
+          symbol: row.tokenSymbol || 'UNK'
+        };
+        
+        // Handle specific token vs collection count based on token_id presence
+        let displayName: string;
+        console.log(`[CSV Conversion] LSP8 row:`, { 
+          contract_address: row.contract_address, 
+          token_id: row.token_id, 
+          min_amount: row.min_amount,
+          hasTokenId: !!(row.token_id && row.token_id.trim() !== '')
+        });
+        
+        if (row.token_id && row.token_id.trim() !== '') {
+          // Specific token ID
+          config.tokenId = row.token_id.trim();
+          displayName = row.isTokenFound 
+            ? `LSP8 NFT: Token #${row.token_id} from ${row.tokenName}` 
+            : `LSP8 NFT: Token #${row.token_id} from ${row.contract_address}`;
+          console.log(`[CSV Conversion] Creating specific token config:`, config);
+        } else {
+          // Collection count
+          config.minAmount = row.min_amount;
+          displayName = row.isTokenFound 
+            ? `LSP8 NFT: ≥ ${row.min_amount} from ${row.tokenName}` 
+            : `LSP8 NFT: ≥ ${row.min_amount} from ${row.contract_address}`;
+          console.log(`[CSV Conversion] Creating collection config:`, config);
+        }
+        
         return {
           id,
           type: 'lsp8_nft' as const,
           category: 'token' as const,
-          config: {
-            contractAddress: row.contract_address,
-            minAmount: row.min_amount,
-            name: row.tokenName || 'Unknown Collection',
-            symbol: row.tokenSymbol || 'UNK'
-          },
+          config,
           isValid: true,
-          displayName: row.isTokenFound 
-            ? `${row.tokenName} Collection` 
-            : row.contract_address
+          displayName
         };
       } else if (row.requirement_type === 'must_follow') {
         return {
@@ -291,6 +316,34 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
       }
     }
     
+    // Validate optional token_id field for LSP8 tokens
+    if (row.token_id !== undefined && row.token_id !== '') {
+      const trimmedTokenId = row.token_id.trim();
+      
+      // token_id should only be used with lsp8_nft
+      if (row.requirement_type?.toLowerCase() !== 'lsp8_nft') {
+        errors.push(`Row ${rowIndex + 1}: token_id can only be used with 'lsp8_nft' requirement_type (found: ${row.requirement_type})`);
+      }
+      
+      // Validate token_id format (should be a positive integer)
+      if (!/^\d+$/.test(trimmedTokenId)) {
+        errors.push(`Row ${rowIndex + 1}: token_id must be a positive integer (found: ${row.token_id})`);
+      } else {
+        try {
+          const tokenIdNum = BigInt(trimmedTokenId);
+          if (tokenIdNum < BigInt(0)) {
+            errors.push(`Row ${rowIndex + 1}: token_id must be non-negative (found: ${row.token_id})`);
+          }
+          
+          // If token_id is specified, min_amount must be '1'
+          if (row.min_amount?.trim() !== '1') {
+            errors.push(`Row ${rowIndex + 1}: When token_id is specified, min_amount must be '1' (found: ${row.min_amount})`);
+          }
+        } catch {
+          errors.push(`Row ${rowIndex + 1}: token_id is too large or invalid format (found: ${row.token_id})`);
+        }
+      }
+    }
 
     
     return { isValid: errors.length === 0, errors };
@@ -325,10 +378,11 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
           
           // Check if first row is a header (contains expected column names)
           const firstRow = rows[0];
-          const isHeader = firstRow && firstRow.length === 4 && 
+          const isHeader = firstRow && (firstRow.length === 4 || firstRow.length === 5) && 
             (firstRow[0]?.toLowerCase().includes('ecosystem') || 
              firstRow[1]?.toLowerCase().includes('requirement') ||
-             firstRow[2]?.toLowerCase().includes('address'));
+             firstRow[2]?.toLowerCase().includes('address') ||
+             (firstRow.length === 5 && firstRow[4]?.toLowerCase().includes('token')));
           
           if (isHeader) {
             console.log('[CSV Upload] Detected header row, skipping it');
@@ -339,17 +393,18 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
           for (let i = startIndex; i < rows.length; i++) {
             const rowArray = rows[i];
             
-            if (!rowArray || rowArray.length < 4) {
-              allErrors.push(`Row ${i + 1}: Expected 4 columns, got ${rowArray?.length || 0}`);
+            if (!rowArray || rowArray.length < 4 || rowArray.length > 5) {
+              allErrors.push(`Row ${i + 1}: Expected 4-5 columns, got ${rowArray?.length || 0}`);
               continue;
             }
             
             // Convert array to object format for validation
-            const rowObject = {
+            const rowObject: CSVRow = {
               ecosystem: rowArray[0]?.trim(),
               requirement_type: rowArray[1]?.trim(),
               contract_address: rowArray[2]?.trim(),
-              min_amount: rowArray[3]?.trim()
+              min_amount: rowArray[3]?.trim(),
+              token_id: rowArray.length === 5 ? rowArray[4]?.trim() : undefined
             };
             
             const validation = validateCSVRow(rowObject, i);
@@ -359,7 +414,8 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
                 ecosystem: rowObject.ecosystem.toLowerCase(),
                 requirement_type: rowObject.requirement_type.toLowerCase(),
                 contract_address: rowObject.contract_address.toLowerCase(),
-                min_amount: rowObject.min_amount
+                min_amount: rowObject.min_amount,
+                token_id: rowObject.token_id // Preserve token_id field
               });
             } else {
               allErrors.push(...validation.errors);
@@ -683,22 +739,25 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
         <div className="text-sm text-muted-foreground space-y-2">
           <div>
             <p className="font-medium">Option 1: With header row (optional)</p>
-            <p><code>ecosystem,requirement_type,contract_address,min_amount</code></p>
+            <p><code>ecosystem,requirement_type,contract_address,min_amount,token_id</code></p>
             <p><code>universal_profile,lsp7_token,0xb2894...,1</code></p>
+            <p><code>universal_profile,lsp8_nft,0x54405...,3,42</code></p>
           </div>
           <div>
-            <p className="font-medium">Option 2: Data only (simpler)</p>
+            <p className="font-medium">Option 2: Data only (4-5 columns)</p>
             <p><code>universal_profile,lsp7_token,0xb2894...,1</code></p>
-            <p><code>universal_profile,lsp8_nft,0x54405...,1</code></p>
+            <p><code>universal_profile,lsp8_nft,0x54405...,1</code> (any token from collection)</p>
+            <p><code>universal_profile,lsp8_nft,0x54405...,1,42</code> (specific token #42)</p>
             <p><code>universal_profile,must_follow,0x1234...,1</code></p>
             <p><code>universal_profile,must_be_followed_by,0xabcd...,1</code></p>
           </div>
           <div className="mt-2 pt-2 border-t border-muted-foreground/20 text-xs">
             <p>• Header row is automatically detected and optional</p>
-            <p>• Each row must have exactly 4 columns in the order shown</p>
+            <p>• Each row must have 4-5 columns (5th column token_id is optional for LSP8)</p>
             <p>• Supports: tokens (lsp7_token, lsp8_nft) and profiles (must_follow, must_be_followed_by)</p>
             <p>• <strong>Min amount must be in wei format</strong> (positive integer), &apos;1&apos; for profile requirements</p>
             <p>• Example: For 0.0001 tokens with 18 decimals, use &apos;100000000000000&apos; (not &apos;0.0001&apos;)</p>
+            <p>• Optional token_id: Leave empty for collection count, specify for specific LSP8 token</p>
             <p>• LUKSO blockchain only</p>
             <p>• Set ANY/ALL fulfillment globally at the lock level</p>
           </div>
