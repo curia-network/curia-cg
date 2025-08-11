@@ -37,6 +37,20 @@ export interface TokenMetadata {
 }
 
 /**
+ * Universal Profile metadata interface
+ */
+export interface ProfileMetadata {
+  address: string;
+  name?: string;
+  description?: string;
+  avatar?: string; // Resolved IPFS URL from avatars
+  profileImage?: string; // Resolved IPFS URL from profileImages  
+  links?: Array<{ title: string; url: string }>;
+  confidence: 'high' | 'medium' | 'low';
+  error?: string;
+}
+
+/**
  * Raw GraphQL response interface
  */
 interface GraphQLAssetResponse {
@@ -60,10 +74,22 @@ interface GraphQLAssetResponse {
 }
 
 /**
- * Cache entry with timestamp
+ * Raw GraphQL Profile response interface
+ */
+interface GraphQLProfileResponse {
+  id: string; // This is actually the address
+  name?: string;
+  description?: string;
+  avatars?: { src: string }[];
+  profileImages?: { src: string }[];
+  links?: { title: string; url: string }[];
+}
+
+/**
+ * Cache entry with timestamp (supports both tokens and profiles)
  */
 interface CacheEntry {
-  data: TokenMetadata;
+  data: TokenMetadata | ProfileMetadata;
   timestamp: number;
 }
 
@@ -107,11 +133,17 @@ export class LuksoGraphQLService {
     
     for (const address of addresses) {
       const normalizedAddress = address.toLowerCase();
-      const cached = this.cache.get(normalizedAddress);
+      const cached = this.cache.get(`token_${normalizedAddress}`);
       
       if (cached && (now - cached.timestamp) < LuksoGraphQLService.CACHE_DURATION_MS) {
-        resultMap.set(address, cached.data);
-        console.log(`[LuksoGraphQLService] 💾 Cache hit for ${address}`);
+        // Type guard to ensure we have TokenMetadata
+        const data = cached.data;
+        if ('symbol' in data && 'decimals' in data) {
+          resultMap.set(address, data as TokenMetadata);
+          console.log(`[LuksoGraphQLService] 💾 Cache hit for ${address}`);
+        } else {
+          uncachedAddresses.push(address);
+        }
       } else {
         uncachedAddresses.push(address);
       }
@@ -170,7 +202,7 @@ export class LuksoGraphQLService {
             resultMap.set(originalAddress, metadata);
             
             // Cache the metadata
-            this.cache.set(assetData.id.toLowerCase(), {
+            this.cache.set(`token_${assetData.id.toLowerCase()}`, {
               data: metadata,
               timestamp: now
             });
@@ -189,7 +221,7 @@ export class LuksoGraphQLService {
           resultMap.set(address, fallbackMetadata);
           
           // Cache the fallback to avoid repeated lookups
-          this.cache.set(address.toLowerCase(), {
+          this.cache.set(`token_${address.toLowerCase()}`, {
             data: fallbackMetadata,
             timestamp: now
           });
@@ -208,7 +240,7 @@ export class LuksoGraphQLService {
           resultMap.set(address, fallbackMetadata);
           
           // Cache the fallback
-          this.cache.set(address.toLowerCase(), {
+          this.cache.set(`token_${address.toLowerCase()}`, {
             data: fallbackMetadata,
             timestamp: now
           });
@@ -225,6 +257,116 @@ export class LuksoGraphQLService {
   async fetchTokenMetadata(address: string): Promise<TokenMetadata | null> {
     const batch = await this.batchFetchTokenMetadata([address]);
     return batch.get(address) || null;
+  }
+
+  /**
+   * Batch fetch Universal Profile metadata with caching
+   */
+  public async batchFetchProfileMetadata(addresses: string[]): Promise<Map<string, ProfileMetadata>> {
+    const resultMap = new Map<string, ProfileMetadata>();
+    const uncachedAddresses: string[] = [];
+    
+    console.log(`[LuksoGraphQLService] 🔍 Fetching profile metadata for ${addresses.length} addresses`);
+    
+    // Check cache first
+    for (const address of addresses) {
+      const normalizedAddress = address.toLowerCase();
+      const cached = this.cache.get(`profile_${normalizedAddress}`);
+      
+      if (cached && (Date.now() - cached.timestamp < LuksoGraphQLService.CACHE_DURATION_MS)) {
+        resultMap.set(normalizedAddress, cached.data as ProfileMetadata);
+        console.log(`[LuksoGraphQLService] ✓ Cache hit for profile ${normalizedAddress}`);
+      } else {
+        uncachedAddresses.push(normalizedAddress);
+      }
+    }
+    
+    if (uncachedAddresses.length === 0) {
+      return resultMap;
+    }
+
+    try {
+      // Execute batch GraphQL query
+      const BATCH_PROFILE_QUERY = gql`
+        query GetProfileMetadata($addresses: [String!]!) {
+          Profile(where: { id: { _in: $addresses } }) {
+            id
+            name
+            description
+            avatars {
+              src
+            }
+            profileImages {
+              src
+            }
+            links {
+              title
+              url
+            }
+          }
+        }
+      `;
+
+      const response: { Profile: GraphQLProfileResponse[] } = await this.graphqlClient.request(BATCH_PROFILE_QUERY, {
+        addresses: uncachedAddresses
+      });
+
+      console.log(`[LuksoGraphQLService] 📊 GraphQL response for ${uncachedAddresses.length} profiles:`, {
+        profileCount: response.Profile?.length || 0,
+        addresses: uncachedAddresses
+      });
+
+      // Process response
+      if (response.Profile && Array.isArray(response.Profile)) {
+        for (const profile of response.Profile as GraphQLProfileResponse[]) {
+          const metadata = this.convertProfileData(profile);
+          const normalizedAddress = profile.id.toLowerCase();
+          
+          resultMap.set(normalizedAddress, metadata);
+          
+          // Cache the result
+          this.cache.set(`profile_${normalizedAddress}`, {
+            data: metadata,
+            timestamp: Date.now()
+          });
+        }
+      }
+
+      // Handle missing profiles (create fallbacks for addresses not found)
+      for (const address of uncachedAddresses) {
+        if (!resultMap.has(address)) {
+          const fallbackMetadata = this.createFallbackProfileMetadata(address);
+          resultMap.set(address, fallbackMetadata);
+          
+          // Cache the fallback to avoid repeated lookups
+          this.cache.set(`profile_${address}`, {
+            data: fallbackMetadata,
+            timestamp: Date.now()
+          });
+        }
+      }
+
+    } catch (error) {
+      console.error(`[LuksoGraphQLService] ❌ Profile GraphQL query failed:`, error);
+      
+      // Create fallback for all uncached addresses on error
+      for (const address of uncachedAddresses) {
+        if (!resultMap.has(address)) {
+          const fallbackMetadata = this.createFallbackProfileMetadata(address, `GraphQL error: ${error instanceof Error ? error.message : 'Unknown error'}`);
+          resultMap.set(address, fallbackMetadata);
+        }
+      }
+    }
+    
+    return resultMap;
+  }
+
+  /**
+   * Fetch single profile metadata with caching
+   */
+  async fetchProfileMetadata(address: string): Promise<ProfileMetadata | null> {
+    const batch = await this.batchFetchProfileMetadata([address]);
+    return batch.get(address.toLowerCase()) || null;
   }
 
   /**
@@ -283,6 +425,52 @@ export class LuksoGraphQLService {
       confidence: 'low',
       error: error || 'Token not found in GraphQL indexer'
     };
+  }
+
+  /**
+   * Convert GraphQL Profile response to ProfileMetadata
+   */
+  private convertProfileData(profile: GraphQLProfileResponse): ProfileMetadata {
+    return {
+      address: profile.id, // GraphQL uses 'id' but it's actually the address
+      name: profile.name || undefined,
+      description: profile.description || undefined,
+      avatar: this.extractBestAvatar(profile),
+      profileImage: this.extractBestProfileImage(profile),
+      links: profile.links || [],
+      confidence: 'high'
+    };
+  }
+
+  /**
+   * Create fallback metadata for profiles not found in GraphQL
+   */
+  private createFallbackProfileMetadata(address: string, error?: string): ProfileMetadata {
+    return {
+      address: address,
+      confidence: 'low',
+      error: error || 'Profile not found in GraphQL indexer'
+    };
+  }
+
+  /**
+   * Extract best avatar URL from GraphQL response
+   */
+  private extractBestAvatar(profile: GraphQLProfileResponse): string | undefined {
+    if (profile.avatars && profile.avatars.length > 0) {
+      return this.resolveIpfsUrl(profile.avatars[0].src);
+    }
+    return undefined;
+  }
+
+  /**
+   * Extract best profile image URL from GraphQL response
+   */
+  private extractBestProfileImage(profile: GraphQLProfileResponse): string | undefined {
+    if (profile.profileImages && profile.profileImages.length > 0) {
+      return this.resolveIpfsUrl(profile.profileImages[0].src);
+    }
+    return undefined;
   }
 
   /**

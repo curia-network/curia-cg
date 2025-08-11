@@ -4,7 +4,7 @@ import React, { useState, useCallback, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { ArrowLeft, Upload, CheckCircle, AlertCircle, FileText } from 'lucide-react';
 import Papa from 'papaparse';
-import { useLuksoTokenMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
+import { useLuksoTokenMetadata, useLuksoProfileMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
 import type { GatingRequirement } from '@/types/locks';
 
 interface CSVUploadComponentProps {
@@ -17,7 +17,6 @@ interface CSVRow {
   requirement_type: string;
   contract_address: string;
   min_amount: string;
-  fulfillment: string;
 }
 
 interface ValidationResult {
@@ -32,6 +31,8 @@ interface EnrichedValidationResult extends ValidationResult {
     tokenName?: string;
     tokenSymbol?: string;
     tokenDecimals?: number;
+    profileName?: string;
+    profileImage?: string;
     isTokenFound: boolean;
   }>;
   isEnriching: boolean;
@@ -46,34 +47,72 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
   const [validationResult, setValidationResult] = useState<EnrichedValidationResult | null>(null);
   const [dragActive, setDragActive] = useState(false);
 
-  // Extract token addresses for GraphQL fetching
-  const tokenAddresses = validationResult?.validRows.map(row => row.contract_address) || [];
+  // Extract addresses for GraphQL fetching (both tokens and profiles)
+  const tokenAddresses = validationResult?.validRows
+    .filter(row => ['lsp7_token', 'lsp8_nft'].includes(row.requirement_type))
+    .map(row => row.contract_address) || [];
   
-  // Fetch GraphQL metadata for validated tokens
-  const { data: tokenMetadataResponse, isLoading: isLoadingMetadata } = useLuksoTokenMetadata(
+  const profileAddresses = validationResult?.validRows
+    .filter(row => ['must_follow', 'must_be_followed_by'].includes(row.requirement_type))
+    .map(row => row.contract_address) || [];
+  
+  // Fetch GraphQL metadata for tokens
+  const { data: tokenMetadataResponse, isLoading: isLoadingTokens } = useLuksoTokenMetadata(
     tokenAddresses,
     { 
       includeIcons: true, 
       enabled: tokenAddresses.length > 0 
     }
   );
+  
+  // Fetch GraphQL metadata for profiles
+  const { data: profileMetadataResponse, isLoading: isLoadingProfiles } = useLuksoProfileMetadata(
+    profileAddresses,
+    { 
+      includeIcons: true, 
+      enabled: profileAddresses.length > 0 
+    }
+  );
+  
+  const isLoadingMetadata = isLoadingTokens || isLoadingProfiles;
 
   // Enrich validation results with GraphQL metadata
   useEffect(() => {
-    if (!validationResult || !tokenMetadataResponse || isLoadingMetadata) return;
+    if (!validationResult || isLoadingMetadata) return;
+    // Only proceed if we have responses for the data we need
+    if ((tokenAddresses.length > 0 && !tokenMetadataResponse) || 
+        (profileAddresses.length > 0 && !profileMetadataResponse)) return;
 
-    console.log('[CSV Upload] Enriching with GraphQL metadata:', tokenMetadataResponse);
+    console.log('[CSV Upload] Enriching with GraphQL metadata:', { tokenMetadataResponse, profileMetadataResponse });
 
-    const tokenMetadata = tokenMetadataResponse.data?.tokens || {};
+    const tokenMetadata = tokenMetadataResponse?.data?.tokens || {};
+    const profileMetadata = profileMetadataResponse?.data?.profiles || {};
+    
     const enrichedRows = validationResult.validRows.map(row => {
-      const metadata = tokenMetadata[row.contract_address.toLowerCase()] as LuksoTokenMetadata | undefined;
+      if (['lsp7_token', 'lsp8_nft'].includes(row.requirement_type)) {
+        // Token requirement
+        const metadata = tokenMetadata[row.contract_address.toLowerCase()] as LuksoTokenMetadata | undefined;
+        return {
+          ...row,
+          tokenName: metadata?.name || undefined,
+          tokenSymbol: metadata?.symbol || undefined,
+          tokenDecimals: metadata?.decimals || undefined,
+          isTokenFound: !!metadata
+        };
+      } else if (['must_follow', 'must_be_followed_by'].includes(row.requirement_type)) {
+        // Profile requirement
+        const metadata = profileMetadata[row.contract_address.toLowerCase()];
+        return {
+          ...row,
+          profileName: metadata?.name || undefined,
+          profileImage: metadata?.avatar || metadata?.profileImage || undefined,
+          isTokenFound: !!metadata // Reuse this field for profiles too
+        };
+      }
       
       return {
         ...row,
-        tokenName: metadata?.name || undefined,
-        tokenSymbol: metadata?.symbol || undefined,
-        tokenDecimals: metadata?.decimals || undefined,
-        isTokenFound: !!metadata
+        isTokenFound: false
       };
     });
 
@@ -82,7 +121,7 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
     const newWarnings = [...validationResult.warnings];
     
     if (missingTokens.length > 0) {
-      newWarnings.push(`${missingTokens.length} token(s) not found in LUKSO indexer - names will show as addresses`);
+      newWarnings.push(`${missingTokens.length} item(s) not found in LUKSO indexer - names will show as addresses`);
     }
 
     setValidationResult(prev => prev ? {
@@ -142,6 +181,36 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
             ? `${row.tokenName} Collection` 
             : row.contract_address
         };
+      } else if (row.requirement_type === 'must_follow') {
+        return {
+          id,
+          type: 'up_must_follow' as const,
+          category: 'social' as const,
+          config: {
+            address: row.contract_address,
+            profileName: row.profileName || undefined,
+            username: row.profileName || undefined
+          },
+          isValid: true,
+          displayName: row.isTokenFound 
+            ? `Must follow ${row.profileName}` 
+            : `Must follow ${row.contract_address.slice(0, 8)}...`
+        };
+      } else if (row.requirement_type === 'must_be_followed_by') {
+        return {
+          id,
+          type: 'up_must_be_followed_by' as const,
+          category: 'social' as const,
+          config: {
+            address: row.contract_address,
+            profileName: row.profileName || undefined,
+            username: row.profileName || undefined
+          },
+          isValid: true,
+          displayName: row.isTokenFound 
+            ? `Must be followed by ${row.profileName}` 
+            : `Must be followed by ${row.contract_address.slice(0, 8)}...`
+        };
       }
       
       // This shouldn't happen due to validation, but provide fallback
@@ -177,27 +246,28 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
     
     if (!row.requirement_type || typeof row.requirement_type !== 'string') {
       errors.push(`Row ${rowIndex + 1}: Missing or invalid requirement_type`);
-    } else if (!['lsp7_token', 'lsp8_nft'].includes(row.requirement_type.toLowerCase())) {
-      errors.push(`Row ${rowIndex + 1}: Invalid requirement_type '${row.requirement_type}' (must be 'lsp7_token' or 'lsp8_nft')`);
+    } else if (!['lsp7_token', 'lsp8_nft', 'must_follow', 'must_be_followed_by'].includes(row.requirement_type.toLowerCase())) {
+      errors.push(`Row ${rowIndex + 1}: Invalid requirement_type '${row.requirement_type}' (must be 'lsp7_token', 'lsp8_nft', 'must_follow', or 'must_be_followed_by')`);
     }
     
     if (!row.contract_address || typeof row.contract_address !== 'string') {
       errors.push(`Row ${rowIndex + 1}: Missing or invalid contract_address`);
     } else if (!/^0x[a-fA-F0-9]{40}$/.test(row.contract_address)) {
-      errors.push(`Row ${rowIndex + 1}: Invalid contract_address format '${row.contract_address}'`);
+      // For follow requirements, we call it "target_address" but use the same column
+      const addressType = ['must_follow', 'must_be_followed_by'].includes(row.requirement_type?.toLowerCase()) 
+        ? 'target_address' : 'contract_address';
+      errors.push(`Row ${rowIndex + 1}: Invalid ${addressType} format '${row.contract_address}'`);
     }
     
     if (!row.min_amount || typeof row.min_amount !== 'string') {
       errors.push(`Row ${rowIndex + 1}: Missing or invalid min_amount`);
     } else if (isNaN(Number(row.min_amount)) || Number(row.min_amount) <= 0) {
       errors.push(`Row ${rowIndex + 1}: min_amount must be a positive number (found: ${row.min_amount})`);
+    } else if (['must_follow', 'must_be_followed_by'].includes(row.requirement_type?.toLowerCase()) && row.min_amount !== '1') {
+      errors.push(`Row ${rowIndex + 1}: min_amount must be '1' for follow requirements (found: ${row.min_amount})`);
     }
     
-    if (!row.fulfillment || typeof row.fulfillment !== 'string') {
-      errors.push(`Row ${rowIndex + 1}: Missing or invalid fulfillment`);
-    } else if (!['any', 'all'].includes(row.fulfillment.toLowerCase())) {
-      errors.push(`Row ${rowIndex + 1}: Invalid fulfillment '${row.fulfillment}' (must be 'any' or 'all')`);
-    }
+
     
     return { isValid: errors.length === 0, errors };
   }, []);
@@ -231,7 +301,7 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
           
           // Check if first row is a header (contains expected column names)
           const firstRow = rows[0];
-          const isHeader = firstRow && firstRow.length === 5 && 
+          const isHeader = firstRow && firstRow.length === 4 && 
             (firstRow[0]?.toLowerCase().includes('ecosystem') || 
              firstRow[1]?.toLowerCase().includes('requirement') ||
              firstRow[2]?.toLowerCase().includes('address'));
@@ -245,8 +315,8 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
           for (let i = startIndex; i < rows.length; i++) {
             const rowArray = rows[i];
             
-            if (!rowArray || rowArray.length < 5) {
-              allErrors.push(`Row ${i + 1}: Expected 5 columns, got ${rowArray?.length || 0}`);
+            if (!rowArray || rowArray.length < 4) {
+              allErrors.push(`Row ${i + 1}: Expected 4 columns, got ${rowArray?.length || 0}`);
               continue;
             }
             
@@ -255,8 +325,7 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
               ecosystem: rowArray[0]?.trim(),
               requirement_type: rowArray[1]?.trim(),
               contract_address: rowArray[2]?.trim(),
-              min_amount: rowArray[3]?.trim(),
-              fulfillment: rowArray[4]?.trim()
+              min_amount: rowArray[3]?.trim()
             };
             
             const validation = validateCSVRow(rowObject, i);
@@ -266,8 +335,7 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
                 ecosystem: rowObject.ecosystem.toLowerCase(),
                 requirement_type: rowObject.requirement_type.toLowerCase(),
                 contract_address: rowObject.contract_address.toLowerCase(),
-                min_amount: rowObject.min_amount,
-                fulfillment: rowObject.fulfillment.toLowerCase()
+                min_amount: rowObject.min_amount
               });
             } else {
               allErrors.push(...validation.errors);
@@ -505,7 +573,7 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
                 {validationResult.validRows.length > 0 && (
                   <div className="bg-green-50 border border-green-200 rounded-lg p-3">
                     <h4 className="font-medium text-green-800 mb-2">
-                      Valid Tokens ({validationResult.validRows.length}):
+                      Valid Requirements ({validationResult.validRows.length}):
                     </h4>
                     <div className="space-y-2">
                       {(validationResult.enrichedRows.length > 0 ? validationResult.enrichedRows : validationResult.validRows)
@@ -514,11 +582,23 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
                             tokenName?: string;
                             tokenSymbol?: string;
                             tokenDecimals?: number;
+                            profileName?: string;
+                            profileImage?: string;
                             isTokenFound: boolean;
                           }) : null;
-                          const displayName = enrichedRow?.isTokenFound 
-                            ? `${enrichedRow.tokenName} (${enrichedRow.tokenSymbol})` 
-                            : row.contract_address;
+                          
+                          let displayName: string;
+                          if (['lsp7_token', 'lsp8_nft'].includes(row.requirement_type)) {
+                            displayName = enrichedRow?.isTokenFound 
+                              ? `${enrichedRow.tokenName} (${enrichedRow.tokenSymbol})` 
+                              : row.contract_address;
+                          } else if (['must_follow', 'must_be_followed_by'].includes(row.requirement_type)) {
+                            displayName = enrichedRow?.isTokenFound 
+                              ? enrichedRow.profileName || row.contract_address
+                              : row.contract_address;
+                          } else {
+                            displayName = row.contract_address;
+                          }
                           
                           return (
                             <div key={index} className="text-sm text-green-700">
@@ -565,7 +645,7 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
                   onClick={handleImport}
                   disabled={isProcessing || validationResult?.isEnriching}
                 >
-                  Import {validationResult.validRows.length} Token(s) →
+                  Import {validationResult.validRows.length} Requirement(s) →
                 </Button>
               )}
             </div>
@@ -579,18 +659,22 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
         <div className="text-sm text-muted-foreground space-y-2">
           <div>
             <p className="font-medium">Option 1: With header row (optional)</p>
-            <p><code>ecosystem,requirement_type,contract_address,min_amount,fulfillment</code></p>
-            <p><code>universal_profile,lsp7_token,0xb2894...,1,any</code></p>
+            <p><code>ecosystem,requirement_type,contract_address,min_amount</code></p>
+            <p><code>universal_profile,lsp7_token,0xb2894...,1</code></p>
           </div>
           <div>
             <p className="font-medium">Option 2: Data only (simpler)</p>
-            <p><code>universal_profile,lsp7_token,0xb2894...,1,any</code></p>
-            <p><code>universal_profile,lsp8_nft,0x54405...,1,any</code></p>
+            <p><code>universal_profile,lsp7_token,0xb2894...,1</code></p>
+            <p><code>universal_profile,lsp8_nft,0x54405...,1</code></p>
+            <p><code>universal_profile,must_follow,0x1234...,1</code></p>
+            <p><code>universal_profile,must_be_followed_by,0xabcd...,1</code></p>
           </div>
           <div className="mt-2 pt-2 border-t border-muted-foreground/20 text-xs">
             <p>• Header row is automatically detected and optional</p>
-            <p>• Each row must have exactly 5 columns in the order shown</p>
-            <p>• LUKSO blockchain tokens only</p>
+            <p>• Each row must have exactly 4 columns in the order shown</p>
+            <p>• Supports: tokens (lsp7_token, lsp8_nft) and profiles (must_follow, must_be_followed_by)</p>
+            <p>• LUKSO blockchain only</p>
+            <p>• Set ANY/ALL fulfillment globally at the lock level</p>
           </div>
         </div>
         <Button variant="link" size="sm" className="p-0 h-auto mt-2">

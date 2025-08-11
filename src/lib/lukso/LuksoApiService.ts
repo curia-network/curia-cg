@@ -5,7 +5,7 @@
  * metadata via the GraphQL indexer, with caching, error handling, and batch optimization.
  */
 
-import { LuksoGraphQLService, TokenMetadata as LuksoTokenMetadata } from './LuksoGraphQLService';
+import { LuksoGraphQLService, TokenMetadata as LuksoTokenMetadata, ProfileMetadata as LuksoProfileMetadata } from './LuksoGraphQLService';
 
 // Note: Environment variables are configured in LuksoGraphQLService singleton
 
@@ -142,8 +142,37 @@ export class LuksoApiService {
       // 4. Combine cached and fetched data
       const allData = [...this.getCachedData(cached, request.type), ...fetchedData];
       
+      // 4.5. Fetch profiles if requested
+      let profilesData: Map<string, LuksoProfileMetadata> = new Map();
+      if (request.type === 'profiles' || request.type === 'mixed') {
+        try {
+          // Determine which addresses are for profiles
+          let profileAddresses: string[];
+          if (request.type === 'mixed') {
+            // For mixed requests, profile addresses are those not fetched as tokens
+            const tokenAddresses = allData.map(token => token.address.toLowerCase());
+            profileAddresses = request.addresses.filter(addr => 
+              !tokenAddresses.includes(addr.toLowerCase())
+            );
+          } else {
+            // For pure profile requests, all addresses are profiles
+            profileAddresses = request.addresses;
+          }
+
+          if (profileAddresses.length > 0) {
+            console.log(`[LuksoApiService] 🔍 Fetching ${profileAddresses.length} profiles`);
+            profilesData = await this.graphqlService.batchFetchProfileMetadata(profileAddresses);
+          }
+        } catch (error) {
+          console.error('[LuksoApiService] ❌ Profile fetch failed:', error);
+          failed.push(...request.addresses.filter(addr => 
+            !allData.find(token => token.address.toLowerCase() === addr.toLowerCase())
+          ));
+        }
+      }
+      
       // 5. Transform to response format
-      const response = this.transformToResponse(allData, request);
+      const response = this.transformToResponse(allData, request, profilesData);
       
       // 6. Add metadata
       response.meta = {
@@ -274,7 +303,7 @@ export class LuksoApiService {
     return cached;
   }
 
-  private transformToResponse(data: LuksoTokenMetadata[], request: LuksoMetadataRequest): LuksoMetadataResponse {
+  private transformToResponse(data: LuksoTokenMetadata[], request: LuksoMetadataRequest, profilesData?: Map<string, LuksoProfileMetadata>): LuksoMetadataResponse {
     const response: LuksoMetadataResponse = {
       success: true,
       data: {},
@@ -314,10 +343,24 @@ export class LuksoApiService {
       }
     }
 
-    // TODO: Add profiles support when needed
-    if (request.type === 'profiles' || request.type === 'mixed') {
+    // Add profiles if provided
+    if (profilesData && profilesData.size > 0) {
       response.data.profiles = {};
-      // Profile metadata will be implemented when needed
+      for (const [address, profile] of profilesData.entries()) {
+        response.data.profiles[address] = {
+          address: profile.address,
+          name: profile.name,
+          description: profile.description,
+          avatar: profile.avatar,
+          profileImage: profile.profileImage,
+          links: profile.links,
+          confidence: profile.confidence,
+          error: profile.error
+        };
+      }
+    } else if (request.type === 'profiles' || request.type === 'mixed') {
+      // Initialize empty profiles object for profile requests
+      response.data.profiles = {};
     }
 
     // TODO: Add balance support when needed
