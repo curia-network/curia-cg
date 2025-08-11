@@ -45,8 +45,6 @@ export interface TokenRequirementInput {
 
 // ===== CONSTANTS =====
 
-const LUKSO_CHAIN_ID = 42; // LUKSO mainnet (for reference)
-
 // Marketplace base URLs
 const UNIVERSAL_SWAPS_BASE = 'https://universalswaps.io';
 const UNIVERSAL_SWAPS_INFO_BASE = 'https://info.universalswaps.io';

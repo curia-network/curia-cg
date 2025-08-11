@@ -9,6 +9,7 @@ import { ArrowLeft, Image, ToggleLeft, ToggleRight } from 'lucide-react';
 import { GatingRequirement, LSP8NFTConfig } from '@/types/locks';
 import { validateEthereumAddress, validateTokenId } from '@/lib/requirements/validation';
 import { useLuksoSingleToken } from '@/hooks/lukso/useLuksoMetadata';
+import { generateMarketplaceLinksForCSV } from '@/lib/lukso/tokenMarketplaceIntegration';
 
 interface LSP8NFTConfiguratorProps {
   editingRequirement?: GatingRequirement;
@@ -150,10 +151,18 @@ export const LSP8NFTConfigurator: React.FC<LSP8NFTConfiguratorProps> = ({
     if (!currentValue.trim()) return;
 
     try {
+      // Generate marketplace links for the token
+      const marketplaceLinks = generateMarketplaceLinksForCSV(
+        'LSP8',
+        contractAddress.trim(),
+        requirementType === 'specific' ? tokenId.trim() : undefined
+      );
+
       const config: LSP8NFTConfig = {
         contractAddress: contractAddress.trim(),
         name: collectionName.trim() || undefined,
-        symbol: collectionSymbol.trim() || undefined
+        symbol: collectionSymbol.trim() || undefined,
+        marketplaceLinks, // Add marketplace links
       };
 
       if (requirementType === 'specific') {

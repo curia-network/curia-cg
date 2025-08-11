@@ -371,7 +371,8 @@ const PreviewStep = () => {
               minAmount: req.config.minAmount,
               tokenType: 'LSP7',
               contractAddress: req.config.contractAddress,
-              decimals: req.config.decimals // Include decimals for proper verification
+              decimals: req.config.decimals, // Include decimals for proper verification
+              marketplaceLinks: req.config.marketplaceLinks // Include marketplace links
             });
             break;
           case 'lsp8_nft':
@@ -381,7 +382,8 @@ const PreviewStep = () => {
               minAmount: req.config.minAmount || '1',
               tokenType: 'LSP8',
               contractAddress: req.config.contractAddress,
-              tokenId: req.config.tokenId
+              tokenId: req.config.tokenId,
+              marketplaceLinks: req.config.marketplaceLinks // Include marketplace links
             });
             break;
           case 'up_follower_count':
@@ -794,7 +796,8 @@ const LockCreationModalContent: React.FC<LockCreationModalContentProps> = ({
                 minAmount: req.config.minAmount,
                 tokenType: 'LSP7',
                 contractAddress: req.config.contractAddress,
-                decimals: req.config.decimals // Include decimals for proper verification
+                decimals: req.config.decimals, // Include decimals for proper verification
+                marketplaceLinks: req.config.marketplaceLinks // Include marketplace links
               });
               break;
             case 'lsp8_nft':
@@ -804,7 +807,8 @@ const LockCreationModalContent: React.FC<LockCreationModalContentProps> = ({
                 minAmount: req.config.minAmount || '1',
                 tokenType: 'LSP8',
                 contractAddress: req.config.contractAddress,
-                tokenId: req.config.tokenId
+                tokenId: req.config.tokenId,
+                marketplaceLinks: req.config.marketplaceLinks // Include marketplace links
               });
               break;
             case 'up_follower_count':

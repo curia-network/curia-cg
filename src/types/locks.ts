@@ -365,6 +365,7 @@ export interface LSP7TokenConfig {
   name?: string;
   symbol?: string;
   decimals?: number; // Store actual decimals for proper amount handling
+  marketplaceLinks?: import('../types/gating').TokenMarketplaceLinks;
 }
 
 export interface LSP8NFTConfig {
@@ -373,6 +374,7 @@ export interface LSP8NFTConfig {
   tokenId?: string;
   name?: string;
   symbol?: string;
+  marketplaceLinks?: import('../types/gating').TokenMarketplaceLinks;
 }
 
 export interface EthBalanceConfig {

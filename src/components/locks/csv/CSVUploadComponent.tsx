@@ -6,6 +6,7 @@ import { ArrowLeft, Upload, CheckCircle, AlertCircle, FileText } from 'lucide-re
 import Papa from 'papaparse';
 import { useLuksoTokenMetadata, useLuksoProfileMetadata, type LuksoTokenMetadata } from '@/hooks/lukso/useLuksoMetadata';
 import type { GatingRequirement } from '@/types/locks';
+import { generateMarketplaceLinksForCSV } from '@/lib/lukso/tokenMarketplaceIntegration';
 
 interface CSVUploadComponentProps {
   onCancel: () => void;
@@ -150,6 +151,9 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
       const id = `csv-import-${Date.now()}-${index}`;
       
       if (row.requirement_type === 'lsp7_token') {
+        // Generate marketplace links for LSP7 token
+        const marketplaceLinks = generateMarketplaceLinksForCSV('LSP7', row.contract_address);
+
         return {
           id,
           type: 'lsp7_token' as const,
@@ -164,7 +168,8 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
                 throw new Error(`Missing decimals data for token ${row.contract_address}. GraphQL metadata fetch may have failed.`);
               }
               return row.tokenDecimals;
-            })()
+            })(),
+            marketplaceLinks // Add marketplace links
           },
           isValid: true,
           displayName: row.isTokenFound 
@@ -172,22 +177,32 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
             : row.contract_address
         };
       } else if (row.requirement_type === 'lsp8_nft') {
-        const config: any = {
-          contractAddress: row.contract_address,
-          name: row.tokenName || 'Unknown Collection',
-          symbol: row.tokenSymbol || 'UNK'
-        };
-        
         // Handle specific token vs collection count based on token_id presence
         let displayName: string;
+        const hasTokenId = !!(row.token_id && row.token_id.trim() !== '');
+        
         console.log(`[CSV Conversion] LSP8 row:`, { 
           contract_address: row.contract_address, 
           token_id: row.token_id, 
           min_amount: row.min_amount,
-          hasTokenId: !!(row.token_id && row.token_id.trim() !== '')
+          hasTokenId
         });
         
-        if (row.token_id && row.token_id.trim() !== '') {
+        // Generate marketplace links for LSP8 token
+        const marketplaceLinks = generateMarketplaceLinksForCSV(
+          'LSP8', 
+          row.contract_address,
+          hasTokenId && row.token_id ? row.token_id.trim() : undefined
+        );
+
+        const config: any = {
+          contractAddress: row.contract_address,
+          name: row.tokenName || 'Unknown Collection',
+          symbol: row.tokenSymbol || 'UNK',
+          marketplaceLinks // Add marketplace links
+        };
+        
+        if (hasTokenId && row.token_id) {
           // Specific token ID
           config.tokenId = row.token_id.trim();
           displayName = row.isTokenFound 

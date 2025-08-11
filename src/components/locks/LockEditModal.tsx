@@ -156,7 +156,8 @@ const convertBuilderStateToGatingConfig = (state: LockBuilderState) => {
           minAmount: req.config.minAmount,
           tokenType: 'LSP7',
           contractAddress: req.config.contractAddress,
-          decimals: req.config.decimals
+          decimals: req.config.decimals,
+          marketplaceLinks: req.config.marketplaceLinks // Include marketplace links
         });
         break;
       case 'lsp8_nft':
@@ -166,7 +167,8 @@ const convertBuilderStateToGatingConfig = (state: LockBuilderState) => {
           minAmount: req.config.minAmount || '1',
           tokenType: 'LSP8',
           contractAddress: req.config.contractAddress,
-          tokenId: req.config.tokenId
+          tokenId: req.config.tokenId,
+          marketplaceLinks: req.config.marketplaceLinks // Include marketplace links
         });
         break;
       case 'up_follower_count':

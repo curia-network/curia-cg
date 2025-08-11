@@ -13,6 +13,7 @@ import { validateEthereumAddress } from '@/lib/requirements/validation';
 import { parseTokenAmount } from '@/lib/requirements/conversions';
 import { getDisplayDecimals, isNonDivisibleToken, type Lsp7Divisibility } from '@/lib/lukso/lsp7Classification';
 import { useLuksoSingleToken } from '@/hooks/lukso/useLuksoMetadata';
+import { generateMarketplaceLinksForCSV } from '@/lib/lukso/tokenMarketplaceIntegration';
 
 interface LSP7TokenConfiguratorProps {
   editingRequirement?: GatingRequirement;
@@ -202,6 +203,12 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
         }
       }
       
+      // Generate marketplace links for the token
+      const marketplaceLinks = generateMarketplaceLinksForCSV(
+        'LSP7',
+        contractAddress.trim()
+      );
+
       const requirement: GatingRequirement = {
         id: editingRequirement?.id || crypto.randomUUID(),
         type: 'lsp7_token',
@@ -212,6 +219,7 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
           name: tokenName.trim() || undefined,
           symbol: tokenSymbol.trim() || undefined,
           decimals: actualDecimals, // Store the actual decimals
+          marketplaceLinks, // Add marketplace links
         } as LSP7TokenConfig,
         isValid: true,
         displayName
