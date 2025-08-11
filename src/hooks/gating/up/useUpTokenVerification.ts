@@ -127,12 +127,15 @@ export const useUpTokenVerification = (
         const newStatus: Record<string, TokenVerificationStatus> = {};
         let balanceIndex = 0;
         
-        for (const req of requirements) {
+        for (let i = 0; i < requirements.length; i++) {
+          const req = requirements[i];
           const metadata = metadataMap[req.contractAddress.toLowerCase()];
+          
           if (req.tokenType === 'LSP8' && req.tokenId) {
             const tokenKey = `${req.contractAddress}-${req.tokenId}`;
             const result = lsp8Results.find(r => r.key === tokenKey);
             const ownsToken = result?.owner === address.toLowerCase();
+            // For LSP8 with tokenId, the key is already unique
             newStatus[tokenKey] = {
               isMet: ownsToken,
               currentBalance: ownsToken ? '1' : '0',
@@ -156,7 +159,10 @@ export const useUpTokenVerification = (
             const actualDecimals = req.decimals ?? metadata?.actualDecimals ?? metadata?.decimals ?? 18;
             const displayDecimals = req.decimals ?? metadata?.displayDecimals ?? actualDecimals;
             
-            newStatus[req.contractAddress] = {
+            // 🎯 FIX: Create unique key per requirement to handle multiple requirements for same token
+            const requirementKey = `${req.contractAddress}-${req.minAmount}-${i}`;
+            
+            newStatus[requirementKey] = {
               isMet,
               currentBalance: balance ? balance.toString() : '0',
               metadata: metadata ? {

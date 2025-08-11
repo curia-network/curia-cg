@@ -481,7 +481,7 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
                 // 🎯 FIX: Use same tokenKey logic that matches data storage
                 const tokenKey = tokenReq.tokenType === 'LSP8' && tokenReq.tokenId 
                   ? `${tokenReq.contractAddress}-${tokenReq.tokenId}` // Unique key for specific LSP8 tokens
-                  : tokenReq.contractAddress; // Standard key for LSP7 and LSP8 collection verification
+                  : `${tokenReq.contractAddress}-${tokenReq.minAmount}-${index}`; // Unique key per requirement for LSP7 and LSP8 collection verification
                   
                 const tokenData = tokenVerifications[tokenKey];
                 let displayAmount: string;
@@ -559,19 +559,8 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
                                     // LSP8 tokens are always whole numbers
                                     return Math.floor(parseFloat(tokenData.formattedBalance) || 0).toString();
                                   } else {
-                                    // For LSP7, check if this looks like a non-divisible token
-                                    const balanceNumber = parseFloat(tokenData.formattedBalance || '0');
-                                    const rawBalance = ethers.BigNumber.from(tokenData.balance || '0');
-                                    
-                                    // If balance is very small (likely in wei) but greater than 0, it might be a non-divisible token
-                                    if (balanceNumber > 0 && balanceNumber < 0.001 && rawBalance.gt(0)) {
-                                      // Display the raw balance as whole numbers
-                                      const wholeBags = rawBalance.toString();
-                                      console.log(`[RichRequirementsDisplay] 🔧 Non-divisible LSP7 balance for ${tokenReq.contractAddress}: ${wholeBags} (from ${tokenData.formattedBalance})`);
-                                      return wholeBags;
-                                    }
-                                    
-                                    // For normal divisible tokens or zero balances
+                                    // For LSP7 tokens, always use the formatted balance
+                                    // The GraphQL metadata and requirement decimals should be trusted
                                     return tokenData.formattedBalance;
                                   }
                                 })()
