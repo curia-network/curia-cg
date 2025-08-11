@@ -215,6 +215,11 @@ export const verifyFollowerRequirements = (userAddress: string, requirements: Fo
 
 /**
  * Execute a follow transaction on the LSP26 registry
+ * 
+ * IMPORTANT: LUKSO transactions go through Universal Relayer which can cause delays.
+ * Gas estimation should be generous (~50% buffer) but delays are usually relayer-related,
+ * not gas price issues. Typical LUKSO gas prices are 0.4-2.5 Gwei.
+ * 
  * @param targetAddress - The Universal Profile address to follow
  * @param signer - Connected ethers signer (should be connected to user's UP)
  * @returns Transaction object
@@ -232,13 +237,34 @@ export async function followProfile(
     // 2. Create contract instance with signer for transactions
     const contract = new ethers.Contract(LSP26_REGISTRY_ADDRESS, LSP26_ABI, signer);
     
-    // 3. Gas estimation
-    const gasEstimate = await contract.estimateGas.follow(targetAddress);
-    const gasLimit = gasEstimate.mul(110).div(100); // 10% buffer for safety
+    // 3. Enhanced gas estimation for Universal Profile transactions
+    let gasLimit: ethers.BigNumber;
+    
+    try {
+      // Try to estimate gas first
+      const gasEstimate = await contract.estimateGas.follow(targetAddress);
+      
+      // For Universal Profile transactions, we need a larger buffer due to:
+      // 1. LSP6 Key Manager overhead
+      // 2. Universal Profile delegation complexity  
+      // 3. State-dependent LSP26 operations
+      gasLimit = gasEstimate.mul(150).div(100); // 50% buffer for UP transactions
+      
+      console.log(`[LSP26] Gas estimate: ${gasEstimate.toString()}, with 50% buffer: ${gasLimit.toString()}`);
+      
+    } catch (estimateError) {
+      console.warn(`[LSP26] Gas estimation failed, using fallback:`, estimateError);
+      
+      // Fallback to higher fixed gas limit for LUKSO follow transactions
+      // Based on observed successful LSP26 follow operations
+      gasLimit = ethers.BigNumber.from("200000"); // 200k gas - safe for most UP follow operations
+      
+      console.log(`[LSP26] Using fallback gas limit: ${gasLimit.toString()}`);
+    }
     
     console.log(`[LSP26] Following ${targetAddress} with gas limit: ${gasLimit.toString()}`);
     
-    // 4. Execute follow transaction
+    // 4. Execute follow transaction with enhanced gas limit
     const tx = await contract.follow(targetAddress, { gasLimit });
     
     console.log(`[LSP26] Follow transaction submitted: ${tx.hash}`);
@@ -279,8 +305,18 @@ export async function checkSufficientBalance(
     // Get current balance
     const balance = await signer.getBalance();
     
-    // Estimate gas for follow transaction
-    const gasEstimate = await contract.estimateGas.follow(targetAddress);
+    // Estimate gas for follow transaction (same logic as followProfile)
+    let gasEstimate: ethers.BigNumber;
+    
+    try {
+      gasEstimate = await contract.estimateGas.follow(targetAddress);
+      // Use same 50% buffer as followProfile function
+      gasEstimate = gasEstimate.mul(150).div(100);
+    } catch {
+      // Use same fallback as followProfile function
+      gasEstimate = ethers.BigNumber.from("200000");
+    }
+    
     const gasPrice = await signer.getGasPrice();
     
     // Calculate required balance (gas * gasPrice)

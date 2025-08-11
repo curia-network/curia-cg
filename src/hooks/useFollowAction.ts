@@ -69,17 +69,25 @@ export function useFollowAction({
       
       console.log(`[useFollowAction] Transaction submitted: ${tx.hash}`);
       
-      // 6. Wait for confirmation
+      // 6. Wait for confirmation (with extended timeout for Universal Relayer)
       console.log(`[useFollowAction] Waiting for transaction confirmation...`);
-      const receipt = await tx.wait();
+      console.log(`[useFollowAction] Note: LUKSO Universal Relayer may cause delays - this is normal`);
+      
+      const receipt = await Promise.race([
+        tx.wait(),
+        // Extended timeout for Universal Relayer delays (5 minutes)
+        new Promise<never>((_, reject) => 
+          setTimeout(() => reject(new Error('TIMEOUT_RELAYER_DELAY')), 300000)
+        )
+      ]);
       
       if (receipt.status === 1) {
-        console.log(`[useFollowAction] ✅ Follow successful!`);
+        console.log(`[useFollowAction] ✅ Follow successful in block ${receipt.blockNumber}!`);
         
         // 7. Success callback to refresh verification status
         onSuccess?.();
       } else {
-        throw new Error('Transaction failed');
+        throw new Error('Transaction failed - receipt status 0');
       }
       
     } catch (error: any) {
@@ -98,6 +106,9 @@ export function useFollowAction({
         errorMessage = errorMessage;
       } else if (errorMessage.includes('Cannot follow yourself')) {
         errorMessage = 'You cannot follow your own profile';
+      } else if (errorMessage.includes('TIMEOUT_RELAYER_DELAY')) {
+        // Specific handling for Universal Relayer delays
+        errorMessage = 'Transaction is processing through LUKSO Universal Relayer. This may take several minutes. Check back shortly or try refreshing.';
       } else if (errorMessage.includes('network') || errorMessage.includes('timeout')) {
         errorMessage = 'Network error. Please check your connection and try again.';
       }
