@@ -34,6 +34,7 @@ export const LSP8NFTConfigurator: React.FC<LSP8NFTConfiguratorProps> = ({
   const [collectionSymbol, setCollectionSymbol] = useState('');
   const [addressValidation, setAddressValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: false });
   const [valueValidation, setValueValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: false });
+  const [customMarketplaceUrl, setCustomMarketplaceUrl] = useState('');
 
   // ===== GRAPHQL METADATA FETCHING =====
   
@@ -65,6 +66,12 @@ export const LSP8NFTConfigurator: React.FC<LSP8NFTConfiguratorProps> = ({
       } else if (config.minAmount) {
         setRequirementType('count');
         setMinCount(config.minAmount);
+      }
+      
+      // Initialize custom marketplace URL if available
+      const lsp8Config = config as LSP8NFTConfig;
+      if (lsp8Config.marketplaceLinks?.custom) {
+        setCustomMarketplaceUrl(lsp8Config.marketplaceLinks.custom);
       }
     }
   }, [editingRequirement]);
@@ -102,6 +109,20 @@ export const LSP8NFTConfigurator: React.FC<LSP8NFTConfiguratorProps> = ({
       setCollectionSymbol('UNK');
     }
   }, [metadataError]);
+
+  // ===== MARKETPLACE URL GENERATION =====
+  
+  useEffect(() => {
+    // Auto-generate marketplace URL when valid address is entered
+    if (addressValidation.isValid && !customMarketplaceUrl) {
+      try {
+        const marketplaceLinks = generateMarketplaceLinksForCSV('LSP8', contractAddress);
+        setCustomMarketplaceUrl(marketplaceLinks.primary || '');
+      } catch (error) {
+        console.warn('[LSP8 Configurator] Failed to generate marketplace URL:', error);
+      }
+    }
+  }, [addressValidation.isValid, contractAddress, customMarketplaceUrl]);
 
   // ===== VALIDATION =====
   
@@ -152,17 +173,22 @@ export const LSP8NFTConfigurator: React.FC<LSP8NFTConfiguratorProps> = ({
 
     try {
       // Generate marketplace links for the token
-      const marketplaceLinks = generateMarketplaceLinksForCSV(
+      const baseMarketplaceLinks = generateMarketplaceLinksForCSV(
         'LSP8',
         contractAddress.trim(),
         requirementType === 'specific' ? tokenId.trim() : undefined
       );
 
+      // If user has custom URL, override the primary URL
+      const finalMarketplaceLinks = customMarketplaceUrl.trim() 
+        ? { ...baseMarketplaceLinks, custom: customMarketplaceUrl.trim(), primary: customMarketplaceUrl.trim() }
+        : baseMarketplaceLinks;
+
       const config: LSP8NFTConfig = {
         contractAddress: contractAddress.trim(),
         name: collectionName.trim() || undefined,
         symbol: collectionSymbol.trim() || undefined,
-        marketplaceLinks, // Add marketplace links
+        marketplaceLinks: finalMarketplaceLinks, // Add marketplace links
       };
 
       if (requirementType === 'specific') {
@@ -295,6 +321,25 @@ export const LSP8NFTConfigurator: React.FC<LSP8NFTConfiguratorProps> = ({
                     </p>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Marketplace URL */}
+            {addressValidation.isValid && (
+              <div className="p-4 bg-blue-50 dark:bg-blue-900/30 rounded-lg border border-blue-200 dark:border-blue-800">
+                <Label className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                  Marketplace URL
+                </Label>
+                <p className="text-xs text-blue-700 dark:text-blue-300 mt-1 mb-2">
+                  Where users can get this NFT. Auto-generated but editable.
+                </p>
+                <Input
+                  type="url"
+                  placeholder="https://universal.page/collection/..."
+                  value={customMarketplaceUrl}
+                  onChange={(e) => setCustomMarketplaceUrl(e.target.value)}
+                  className="text-sm"
+                />
               </div>
             )}
 

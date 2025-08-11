@@ -38,6 +38,7 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
   const [amountValidation, setAmountValidation] = useState<{ isValid: boolean; error?: string }>({ isValid: false });
   const [tokenClassification, setTokenClassification] = useState<Lsp7Divisibility | null>(null);
   const [actualDecimals, setActualDecimals] = useState<number>(18);
+  const [customMarketplaceUrl, setCustomMarketplaceUrl] = useState('');
 
   // ===== GRAPHQL METADATA FETCHING =====
   
@@ -71,6 +72,12 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
       if (config.minAmount) {
         const humanAmount = parseFloat(ethers.utils.formatUnits(config.minAmount, decimals));
         setTokenAmount(humanAmount.toString());
+      }
+      
+      // Initialize custom marketplace URL if available
+      const lsp7Config = config as LSP7TokenConfig;
+      if (lsp7Config.marketplaceLinks?.custom) {
+        setCustomMarketplaceUrl(lsp7Config.marketplaceLinks.custom);
       }
     }
   }, [editingRequirement]);
@@ -118,6 +125,20 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
       setTokenClassification(null);
     }
   }, [metadataError]);
+
+  // ===== MARKETPLACE URL GENERATION =====
+  
+  useEffect(() => {
+    // Auto-generate marketplace URL when valid address is entered
+    if (addressValidation.isValid && !customMarketplaceUrl) {
+      try {
+        const marketplaceLinks = generateMarketplaceLinksForCSV('LSP7', contractAddress);
+        setCustomMarketplaceUrl(marketplaceLinks.primary || '');
+      } catch (error) {
+        console.warn('[LSP7 Configurator] Failed to generate marketplace URL:', error);
+      }
+    }
+  }, [addressValidation.isValid, contractAddress, customMarketplaceUrl]);
 
   // ===== VALIDATION =====
   
@@ -204,10 +225,15 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
       }
       
       // Generate marketplace links for the token
-      const marketplaceLinks = generateMarketplaceLinksForCSV(
+      const baseMarketplaceLinks = generateMarketplaceLinksForCSV(
         'LSP7',
         contractAddress.trim()
       );
+
+      // If user has custom URL, override the primary URL
+      const finalMarketplaceLinks = customMarketplaceUrl.trim() 
+        ? { ...baseMarketplaceLinks, custom: customMarketplaceUrl.trim(), primary: customMarketplaceUrl.trim() }
+        : baseMarketplaceLinks;
 
       const requirement: GatingRequirement = {
         id: editingRequirement?.id || crypto.randomUUID(),
@@ -219,7 +245,7 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
           name: tokenName.trim() || undefined,
           symbol: tokenSymbol.trim() || undefined,
           decimals: actualDecimals, // Store the actual decimals
-          marketplaceLinks, // Add marketplace links
+          marketplaceLinks: finalMarketplaceLinks, // Add marketplace links
         } as LSP7TokenConfig,
         isValid: true,
         displayName
@@ -367,6 +393,25 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
                     </div>
                   )}
                 </div>
+              </div>
+            )}
+
+            {/* Marketplace URL */}
+            {addressValidation.isValid && (
+              <div className="p-4 bg-purple-50 dark:bg-purple-900/30 rounded-lg border border-purple-200 dark:border-purple-800">
+                <Label className="text-sm font-medium text-purple-900 dark:text-purple-100">
+                  Marketplace URL
+                </Label>
+                <p className="text-xs text-purple-700 dark:text-purple-300 mt-1 mb-2">
+                  Where users can get this token. Auto-generated but editable.
+                </p>
+                <Input
+                  type="url"
+                  placeholder="https://universalswaps.io/tokens/..."
+                  value={customMarketplaceUrl}
+                  onChange={(e) => setCustomMarketplaceUrl(e.target.value)}
+                  className="text-sm"
+                />
               </div>
             )}
 
