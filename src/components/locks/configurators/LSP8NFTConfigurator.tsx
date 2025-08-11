@@ -187,7 +187,7 @@ export const LSP8NFTConfigurator: React.FC<LSP8NFTConfiguratorProps> = ({
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && addressValidation.isValid && valueValidation.isValid) {
+    if (e.key === 'Enter' && addressValidation.isValid && valueValidation.isValid && !isLoadingMetadata) {
       handleSave();
     } else if (e.key === 'Escape') {
       onCancel();
@@ -387,7 +387,7 @@ export const LSP8NFTConfigurator: React.FC<LSP8NFTConfiguratorProps> = ({
           </Button>
           <Button 
             onClick={handleSave}
-            disabled={disabled || !isFormValid}
+            disabled={disabled || !isFormValid || isLoadingMetadata}
             className="bg-purple-600 hover:bg-purple-700 text-white"
           >
             {editingRequirement ? 'Update Requirement' : 'Add Requirement'}

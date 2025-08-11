@@ -232,7 +232,7 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && addressValidation.isValid && amountValidation.isValid) {
+    if (e.key === 'Enter' && addressValidation.isValid && amountValidation.isValid && !isLoadingMetadata) {
       handleSave();
     } else if (e.key === 'Escape') {
       onCancel();
@@ -440,7 +440,7 @@ export const LSP7TokenConfigurator: React.FC<LSP7TokenConfiguratorProps> = ({
           </Button>
           <Button 
             onClick={handleSave}
-            disabled={disabled || !isFormValid}
+            disabled={disabled || !isFormValid || isLoadingMetadata}
             className="bg-orange-600 hover:bg-orange-700 text-white"
           >
             {editingRequirement ? 'Update Requirement' : 'Add Requirement'}

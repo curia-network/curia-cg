@@ -279,7 +279,7 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
       // Prioritize enhanced metadata from userStatus.balances (which has classification info)
       const enhancedName = tokenData?.name || metadata?.name || token.name;
       const enhancedSymbol = tokenData?.symbol || metadata?.symbol || token.symbol;
-      const enhancedDecimals = tokenData?.decimals || metadata?.decimals || 18;
+      const enhancedDecimals = tokenData?.decimals ?? metadata?.decimals; // No fallback to 18
       const enhancedIconUrl = metadata?.icon; // Icon from GraphQL metadata
       
       tokenVerifications[tokenKey] = {
@@ -478,26 +478,47 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
           {requirements.requiredTokens && requirements.requiredTokens.length > 0 && (
             <>
               {requirements.requiredTokens.map((tokenReq, index) => {
-                // 🎯 FIX: Use same tokenKey logic that matches data storage
-                const tokenKey = tokenReq.tokenType === 'LSP8' && tokenReq.tokenId 
+                // Key for metadata lookup (simple, based on contract address)
+                const metadataKey = tokenReq.tokenType === 'LSP8' && tokenReq.tokenId 
                   ? `${tokenReq.contractAddress}-${tokenReq.tokenId}` // Unique key for specific LSP8 tokens
-                  : `${tokenReq.contractAddress}-${tokenReq.minAmount}-${index}`; // Unique key per requirement for LSP7 and LSP8 collection verification
+                  : tokenReq.contractAddress; // Simple key for LSP7 and LSP8 collections for metadata
                   
-                const tokenData = tokenVerifications[tokenKey];
+                // Key for verification status lookup (unique per requirement for Issue B fix)
+                const verificationKey = tokenReq.tokenType === 'LSP8' && tokenReq.tokenId 
+                  ? `${tokenReq.contractAddress}-${tokenReq.tokenId}` // Unique key for specific LSP8 tokens
+                  : `${tokenReq.contractAddress}-${tokenReq.minAmount}-${index}`; // Unique key per requirement for LSP7
+                  
+                const tokenData = tokenVerifications[metadataKey]; // Use metadata key for token info
+                const verificationData = userStatus?.balances?.tokens?.[verificationKey]; // Use verification key for balance info
+                
+                // Compute if this specific requirement is met (for Issue B fix)
+                const requirementMet = verificationData ? (() => {
+                  const currentBalance = ethers.BigNumber.from(verificationData.raw || '0');
+                  const requiredAmount = ethers.BigNumber.from(tokenReq.minAmount || '1');
+                  return currentBalance.gte(requiredAmount);
+                })() : tokenData?.meetsRequirement || false;
                 let displayAmount: string;
                 
                 if (tokenReq.tokenType === 'LSP7') {
-                  // Use decimals from the saved requirement first, then fallback to other sources
-                  const actualDecimals = (tokenReq as any).decimals ?? tokenData?.decimals ?? 18;
+                  // Use stored decimals first (from CSV/configurator), then GraphQL as fallback
+                  const storedDecimals = (tokenReq as any).decimals;
+                  const graphqlDecimals = tokenData?.decimals;
+                  const actualDecimals = storedDecimals !== undefined ? storedDecimals : graphqlDecimals;
                   
-                  // Format using the proper decimals
-                  displayAmount = ethers.utils.formatUnits(tokenReq.minAmount || '0', actualDecimals);
-                  
-                  console.log(`[RichRequirementsDisplay] 🔧 Formatting LSP7 ${tokenReq.contractAddress}: minAmount=${tokenReq.minAmount}, decimals=${actualDecimals}, displayAmount=${displayAmount}`);
-                  
-                  // Clean up unnecessary decimals for whole numbers
-                  if (parseFloat(displayAmount) === Math.floor(parseFloat(displayAmount))) {
-                    displayAmount = Math.floor(parseFloat(displayAmount)).toString();
+                  if (actualDecimals === undefined) {
+                    // No decimals data available - show loading state
+                    displayAmount = "Loading...";
+                    console.log(`[RichRequirementsDisplay] ⚠️ No decimals data for LSP7 ${tokenReq.contractAddress}: stored=${storedDecimals}, graphql=${graphqlDecimals}`);
+                  } else {
+                    // Format using the actual decimals
+                    displayAmount = ethers.utils.formatUnits(tokenReq.minAmount || '0', actualDecimals);
+                    
+                    console.log(`[RichRequirementsDisplay] 🔧 Formatting LSP7 ${tokenReq.contractAddress}: minAmount=${tokenReq.minAmount}, stored=${storedDecimals}, graphql=${graphqlDecimals}, used=${actualDecimals}, displayAmount=${displayAmount}`);
+                    
+                    // Clean up unnecessary decimals for whole numbers
+                    if (parseFloat(displayAmount) === Math.floor(parseFloat(displayAmount))) {
+                      displayAmount = Math.floor(parseFloat(displayAmount)).toString();
+                    }
                   }
                 } else {
                   // LSP8 tokens - always whole numbers
@@ -510,7 +531,7 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
                 
                 return (
                   <div key={index} className={`flex items-center justify-between p-3 rounded-lg border min-h-[60px] ${
-                    getRequirementStyling(tokenData?.isLoading, tokenData?.meetsRequirement, tokenData?.error)
+                    getRequirementStyling(tokenData?.isLoading, requirementMet, tokenData?.error)
                   }`}>
                     <div className="flex items-center space-x-3">
                       {/* Token Icon or Fallback */}
@@ -552,19 +573,20 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
                             // For LSP7 or LSP8 collection requirements
                             <>
                               Required: {displayAmount} {tokenReq.tokenType === 'LSP8' ? tokenData?.symbol || tokenReq.symbol || 'tokens' : ''}
-                              {userStatus.connected && tokenData && ` • You have: ${
+                              {userStatus.connected && (verificationData || tokenData) && ` • You have: ${
                                 // Apply the same smart detection for user balance display
                                 (() => {
                                   if (tokenReq.tokenType === 'LSP8') {
                                     // LSP8 tokens are always whole numbers
-                                    return Math.floor(parseFloat(tokenData.formattedBalance) || 0).toString();
+                                    const balance = verificationData?.formatted || tokenData?.formattedBalance || '0';
+                                    return Math.floor(parseFloat(balance) || 0).toString();
                                   } else {
                                     // For LSP7 tokens, always use the formatted balance
                                     // The GraphQL metadata and requirement decimals should be trusted
-                                    return tokenData.formattedBalance;
+                                    return verificationData?.formatted || tokenData?.formattedBalance || '0';
                                   }
                                 })()
-                              } ${tokenData.symbol || 'tokens'}`}
+                              } ${tokenData?.symbol || 'tokens'}`}
                             </>
                           )}
                         </div>
@@ -741,13 +763,27 @@ export const RichRequirementsDisplay: React.FC<RichRequirementsDisplayProps> = (
               
               // Check token requirements
               if (requirements.requiredTokens) {
-                requirements.requiredTokens.forEach(token => {
-                  // 🎯 FIX: Use same tokenKey logic that matches data storage
-                  const tokenKey = token.tokenType === 'LSP8' && token.tokenId 
+                requirements.requiredTokens.forEach((token, index) => {
+                  // Use verification key for requirement checking (unique per requirement)
+                  const verificationKey = token.tokenType === 'LSP8' && token.tokenId 
                     ? `${token.contractAddress}-${token.tokenId}` // Unique key for specific LSP8 tokens
-                    : token.contractAddress; // Standard key for LSP7 and LSP8 collection verification
-                  const tokenData = tokenVerifications[tokenKey];
-                  requirementChecks.push(tokenData?.meetsRequirement || false);
+                    : `${token.contractAddress}-${token.minAmount}-${index}`; // Unique key per requirement for LSP7
+                  
+                  // Check verification data first (from useUpTokenVerification), then fallback to metadata
+                  const verificationData = userStatus?.balances?.tokens?.[verificationKey];
+                  const metadataKey = token.tokenType === 'LSP8' && token.tokenId 
+                    ? `${token.contractAddress}-${token.tokenId}` 
+                    : token.contractAddress;
+                  const tokenData = tokenVerifications[metadataKey];
+                  
+                  // Compute if this specific requirement is met
+                  const requirementMet = verificationData ? (() => {
+                    const currentBalance = ethers.BigNumber.from(verificationData.raw || '0');
+                    const requiredAmount = ethers.BigNumber.from(token.minAmount || '1');
+                    return currentBalance.gte(requiredAmount);
+                  })() : tokenData?.meetsRequirement || false;
+                  
+                  requirementChecks.push(requirementMet);
                 });
               }
               

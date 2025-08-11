@@ -50,8 +50,9 @@ export const UniversalProfileGatingPanel: React.FC<UniversalProfileGatingPanelPr
       ? verificationStatus.balances.lyx >= BigInt(requirements.minLyxBalance)
       : undefined;
 
-    const tokenChecks = requirements.requiredTokens?.map(req => {
-      const tokenKey = req.tokenId ? `${req.contractAddress}-${req.tokenId}` : req.contractAddress;
+    const tokenChecks = requirements.requiredTokens?.map((req, index) => {
+      // Use the same verification key logic as RichRequirementsDisplay for Issue B fix
+      const tokenKey = req.tokenId ? `${req.contractAddress}-${req.tokenId}` : `${req.contractAddress}-${req.minAmount}-${index}`;
       const balance = BigInt(verificationStatus.balances?.tokens?.[tokenKey]?.raw || '0');
       const required = BigInt(req.minAmount || '1');
       return balance >= required;

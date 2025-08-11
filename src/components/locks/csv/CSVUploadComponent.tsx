@@ -96,7 +96,7 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
           ...row,
           tokenName: metadata?.name || undefined,
           tokenSymbol: metadata?.symbol || undefined,
-          tokenDecimals: metadata?.decimals || undefined,
+          tokenDecimals: metadata?.decimals, // Don't use || because 0 is a valid decimal value
           isTokenFound: !!metadata
         };
       } else if (['must_follow', 'must_be_followed_by'].includes(row.requirement_type)) {
@@ -158,7 +158,12 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
             minAmount: row.min_amount,
             name: row.tokenName || 'Unknown Token',
             symbol: row.tokenSymbol || 'UNK',
-            decimals: row.tokenDecimals ?? 18
+            decimals: (() => {
+              if (row.tokenDecimals === undefined) {
+                throw new Error(`Missing decimals data for token ${row.contract_address}. GraphQL metadata fetch may have failed.`);
+              }
+              return row.tokenDecimals;
+            })()
           },
           isValid: true,
           displayName: row.isTokenFound 
@@ -261,10 +266,29 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
     
     if (!row.min_amount || typeof row.min_amount !== 'string') {
       errors.push(`Row ${rowIndex + 1}: Missing or invalid min_amount`);
-    } else if (isNaN(Number(row.min_amount)) || Number(row.min_amount) <= 0) {
-      errors.push(`Row ${rowIndex + 1}: min_amount must be a positive number (found: ${row.min_amount})`);
-    } else if (['must_follow', 'must_be_followed_by'].includes(row.requirement_type?.toLowerCase()) && row.min_amount !== '1') {
-      errors.push(`Row ${rowIndex + 1}: min_amount must be '1' for follow requirements (found: ${row.min_amount})`);
+    } else {
+      // Validate that min_amount is a valid integer (wei format)
+      const trimmedAmount = row.min_amount.trim();
+      
+      // Check if it's a valid integer (no decimals, scientific notation, etc.)
+      if (!/^\d+$/.test(trimmedAmount)) {
+        errors.push(`Row ${rowIndex + 1}: min_amount must be a positive integer in wei format (found: ${row.min_amount})`);
+      } else {
+        try {
+          // Test BigInt conversion to ensure it's valid
+          const bigIntValue = BigInt(trimmedAmount);
+          if (bigIntValue <= BigInt(0)) {
+            errors.push(`Row ${rowIndex + 1}: min_amount must be greater than 0 (found: ${row.min_amount})`);
+          }
+          
+          // For follow requirements, min_amount should always be '1'
+          if (['must_follow', 'must_be_followed_by'].includes(row.requirement_type?.toLowerCase()) && trimmedAmount !== '1') {
+            errors.push(`Row ${rowIndex + 1}: min_amount must be '1' for follow requirements (found: ${row.min_amount})`);
+          }
+        } catch {
+          errors.push(`Row ${rowIndex + 1}: min_amount is too large or invalid format (found: ${row.min_amount})`);
+        }
+      }
     }
     
 
@@ -673,6 +697,8 @@ export const CSVUploadComponent: React.FC<CSVUploadComponentProps> = ({
             <p>• Header row is automatically detected and optional</p>
             <p>• Each row must have exactly 4 columns in the order shown</p>
             <p>• Supports: tokens (lsp7_token, lsp8_nft) and profiles (must_follow, must_be_followed_by)</p>
+            <p>• <strong>Min amount must be in wei format</strong> (positive integer), &apos;1&apos; for profile requirements</p>
+            <p>• Example: For 0.0001 tokens with 18 decimals, use &apos;100000000000000&apos; (not &apos;0.0001&apos;)</p>
             <p>• LUKSO blockchain only</p>
             <p>• Set ANY/ALL fulfillment globally at the lock level</p>
           </div>
